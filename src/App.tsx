@@ -9,6 +9,7 @@ import { OnboardingPage } from '@/pages/OnboardingPage';
 import { DashboardPage } from '@/pages/DashboardPage';
 import { ProfilePage } from '@/pages/ProfilePage';
 import { PlaceholderPage } from '@/pages/PlaceholderPage';
+import { WorkoutPage } from '@/pages/WorkoutPage';
 import { Dumbbell, TrendingUp, Trophy } from 'lucide-react';
 
 function RequireAuth({ children }: { children: ReactNode }) {
@@ -103,6 +104,16 @@ function AppRoutes() {
             <RequireAuth>
               <RequireOnboarding>
                 <DashboardPage />
+              </RequireOnboarding>
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/workout"
+          element={
+            <RequireAuth>
+              <RequireOnboarding>
+                <WorkoutPage />
               </RequireOnboarding>
             </RequireAuth>
           }

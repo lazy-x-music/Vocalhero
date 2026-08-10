@@ -11,6 +11,117 @@ import { defaultUserProfile, defaultOnboardingData } from './userDefaults';
 import type { UserProfile, OnboardingData } from '@/types';
 
 const LOCAL_PROFILES_KEY = 'vocal_hero_local_profiles';
+const LOCAL_COMPLETIONS_KEY = 'vocal_hero_workout_completions';
+
+export interface WorkoutCompletion {
+  workoutId: string;
+  completedAt: number;
+  xpAwarded: number;
+}
+
+function readLocalCompletions(uid: string): WorkoutCompletion[] {
+  try {
+    const all = JSON.parse(localStorage.getItem(LOCAL_COMPLETIONS_KEY) || '{}');
+    return all[uid] ?? [];
+  } catch {
+    return [];
+  }
+}
+
+function writeLocalCompletions(uid: string, completions: WorkoutCompletion[]) {
+  const all = (() => {
+    try {
+      return JSON.parse(localStorage.getItem(LOCAL_COMPLETIONS_KEY) || '{}');
+    } catch {
+      return {};
+    }
+  })();
+  all[uid] = completions;
+  localStorage.setItem(LOCAL_COMPLETIONS_KEY, JSON.stringify(all));
+}
+
+export async function hasCompletedWorkout(uid: string, workoutId: string): Promise<boolean> {
+  if (isFirebaseConfigured && db) {
+    try {
+      const snap = await getDoc(doc(db, 'workout_completions', `${uid}_${workoutId}`));
+      return snap.exists();
+    } catch {
+      // fall through to local
+    }
+  }
+  return readLocalCompletions(uid).some((c) => c.workoutId === workoutId);
+}
+
+export interface WorkoutReward {
+  xp: number;
+  totalWorkouts: number;
+  totalWorkoutMinutes: number;
+  currentStreak: number;
+  longestStreak: number;
+  firstWorkout: boolean;
+}
+
+export async function completeWorkout(
+  uid: string,
+  workoutId: string,
+  xpReward: number,
+  durationMinutes: number
+): Promise<WorkoutReward | null> {
+  if (await hasCompletedWorkout(uid, workoutId)) {
+    return null;
+  }
+
+  const profile = await getUserProfile(uid);
+  if (!profile) return null;
+
+  const newXp = profile.xp + xpReward;
+  const newTotalWorkouts = profile.totalWorkouts + 1;
+  const newTotalMinutes = profile.totalWorkoutMinutes + durationMinutes;
+  const newStreak = profile.currentStreak + 1;
+  const newLongest = Math.max(profile.longestStreak, newStreak);
+  const firstWorkout = profile.totalWorkouts === 0;
+
+  await updateUserProfile(uid, {
+    xp: newXp,
+    totalWorkouts: newTotalWorkouts,
+    totalWorkoutMinutes: newTotalMinutes,
+    currentStreak: newStreak,
+    longestStreak: newLongest,
+  });
+
+  const completion: WorkoutCompletion = {
+    workoutId,
+    completedAt: Date.now(),
+    xpAwarded: xpReward,
+  };
+
+  if (isFirebaseConfigured && db) {
+    try {
+      await setDoc(doc(db, 'workout_completions', `${uid}_${workoutId}`), {
+        uid,
+        workoutId,
+        completedAt: serverTimestamp(),
+        xpAwarded: xpReward,
+        durationMinutes,
+      });
+    } catch {
+      // fall through to local
+    }
+  }
+
+  const completions = readLocalCompletions(uid);
+  completions.push(completion);
+  writeLocalCompletions(uid, completions);
+
+  return {
+    xp: newXp,
+    totalWorkouts: newTotalWorkouts,
+    totalWorkoutMinutes: newTotalMinutes,
+    currentStreak: newStreak,
+    longestStreak: newLongest,
+    firstWorkout,
+  };
+}
 
 function readLocalProfiles(): Record<string, UserProfile> {
   try {
