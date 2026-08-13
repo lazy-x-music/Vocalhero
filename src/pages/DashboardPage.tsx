@@ -9,13 +9,10 @@ import { WorkoutCard } from '@/components/WorkoutCard';
 import { getLevelInfo } from '@/config/levels';
 import { useAuth } from '@/context/AuthContext';
 import { MUSIC_STYLES } from '@/config/onboarding';
-import { Modal } from '@/components/ui/Modal';
-import { useState } from 'react';
 
 export function DashboardPage() {
   const { profile } = useAuth();
   const navigate = useNavigate();
-  const [workoutModal, setWorkoutModal] = useState(false);
 
   if (!profile) {
     return (
@@ -88,8 +85,7 @@ export function DashboardPage() {
             <WorkoutCard
               title="Voice Awakening"
               duration={10}
-              comingSoon
-              onStart={() => setWorkoutModal(true)}
+              onStart={() => navigate('/workout')}
             />
           </div>
           <div className="rounded-2xl bg-bg-secondary border border-border p-5">
@@ -137,23 +133,6 @@ export function DashboardPage() {
         )}
       </div>
 
-      <Modal open={workoutModal} onClose={() => setWorkoutModal(false)} title="Workout System">
-        <div className="text-center py-4">
-          <div className="h-16 w-16 rounded-2xl bg-accent/10 flex items-center justify-center text-accent mx-auto mb-4">
-            <Dumbbell size={32} />
-          </div>
-          <p className="text-lg font-semibold mb-2">Workout system coming next</p>
-          <p className="text-sm text-text-secondary mb-6">
-            The full vocal workout experience is under development. For now, explore your dashboard and profile.
-          </p>
-          <button
-            onClick={() => setWorkoutModal(false)}
-            className="text-sm text-accent font-semibold hover:underline"
-          >
-            Got it
-          </button>
-        </div>
-      </Modal>
     </AppShell>
   );
 }

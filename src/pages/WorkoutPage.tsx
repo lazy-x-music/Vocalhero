@@ -5,7 +5,8 @@ import { Button } from '@/components/ui/Button';
 import { LevelBadge } from '@/components/LevelBadge';
 import { XPProgress } from '@/components/XPProgress';
 import { StageVisual } from '@/components/StageVisual';
-import { getLevelInfo, getXpProgress } from '@/config/levels';
+import { PitchLockGame } from '@/components/PitchLockGame';
+import { getLevelInfo } from '@/config/levels';
 import { VOICE_AWAKENING, type WorkoutStage } from '@/config/workouts';
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/context/ToastContext';
@@ -163,6 +164,11 @@ export function WorkoutPage() {
         </div>
 
         {/* Stage content */}
+        {stageIndex === 1 ? (
+          <div key="pitch-lock" className="flex-1 flex flex-col animate-stage-enter">
+            <PitchLockGame onComplete={handleNextStage} />
+          </div>
+        ) : (
         <div key={stage.id} className="flex-1 flex flex-col animate-stage-enter">
           <div className="mb-4">
             <span className="text-xs uppercase tracking-widest text-accent font-bold">Stage {stage.id} of {workout.stages.length}</span>
@@ -234,6 +240,7 @@ export function WorkoutPage() {
             )}
           </div>
         </div>
+        )}
       </div>
     </div>
   );

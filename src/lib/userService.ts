@@ -227,3 +227,11 @@ export async function updateDisplayName(uid: string, displayName: string): Promi
     // local auth display name handled separately
   }
 }
+
+export async function addXp(uid: string, amount: number): Promise<number | null> {
+  const profile = await getUserProfile(uid);
+  if (!profile) return null;
+  const newXp = profile.xp + amount;
+  await updateUserProfile(uid, { xp: newXp });
+  return newXp;
+}
