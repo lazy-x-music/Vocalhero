@@ -1,3 +1,5 @@
+import { audioService } from './audioService';
+
 export type PitchDetectionCallback = (frequency: number, confidence: number) => void;
 
 const MIN_FREQ = 70;
@@ -16,19 +18,25 @@ export class PitchDetector {
   async start(onPitch: PitchDetectionCallback): Promise<void> {
     if (this.running) return;
 
-    const Ctor = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-    this.audioCtx = new Ctor();
-    if (this.audioCtx.state === 'suspended') {
-      await this.audioCtx.resume();
+    // Use the shared AudioContext from audioService so iOS only has one context
+    this.audioCtx = await audioService.ensureContext();
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      throw new Error('Microphone API not available in this browser.');
     }
 
-    this.mediaStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: false,
-        noiseSuppression: false,
-        autoGainControl: false,
-      },
-    });
+    try {
+      this.mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+        },
+      });
+    } catch {
+      // Fallback: iOS sometimes rejects constrained audio — try plain audio: true
+      this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    }
 
     this.source = this.audioCtx.createMediaStreamSource(this.mediaStream);
     this.analyser = this.audioCtx.createAnalyser();
@@ -99,7 +107,6 @@ export class PitchDetector {
         bestOffset = offset;
         foundGoodCorrelation = true;
       } else if (foundGoodCorrelation && correlation < bestCorrelation) {
-        // parabolic interpolation for better accuracy
         const shift =
           (correlations[correlations.length - 2] -
             correlations[correlations.length - 1] * 2 -
@@ -134,10 +141,8 @@ export class PitchDetector {
       this.analyser.disconnect();
       this.analyser = null;
     }
-    if (this.audioCtx) {
-      void this.audioCtx.close();
-      this.audioCtx = null;
-    }
+    // Do NOT close the shared AudioContext — audioService owns it.
+    this.audioCtx = null;
     this.buffer = null;
   }
 

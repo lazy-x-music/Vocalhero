@@ -98,7 +98,7 @@ export function PitchLockGame({ onComplete }: PitchLockGameProps) {
     setCombo(newCombo);
     setHitFeedback(null);
 
-    audioService.playSuccessSound();
+    void audioService.playSuccessSound();
     setGameState('locked');
 
     let xpThisHit = XP_PER_HIT;
@@ -108,7 +108,7 @@ export function PitchLockGame({ onComplete }: PitchLockGameProps) {
       bonusXp = XP_PERFECT_BONUS;
       xpThisHit += bonusXp;
       setGameState('perfect');
-      audioService.playPerfectRunSound();
+      void audioService.playPerfectRunSound();
     }
 
     setTotalXpEarned((prev) => prev + xpThisHit);
@@ -130,7 +130,7 @@ export function PitchLockGame({ onComplete }: PitchLockGameProps) {
       holdStartRef.current = null;
       lockedRef.current = false;
       setGameState('playing');
-      audioService.playReferenceTone(BEGINNER_NOTES[nextIndex]);
+      void audioService.playReferenceTone(BEGINNER_NOTES[nextIndex]);
     }, 1400);
   }, [user, refreshProfile]);
 
@@ -138,24 +138,31 @@ export function PitchLockGame({ onComplete }: PitchLockGameProps) {
     setGameState('requesting-mic');
     setMicError(null);
     try {
-      audioService.ensureContext();
+      const ctx = await audioService.ensureContext();
+      console.log('[PitchLock] AudioContext state after ensureContext:', ctx.state);
+
       const detector = new PitchDetector();
       await detector.start(handlePitch);
       detectorRef.current = detector;
+      console.log('[PitchLock] PitchDetector started successfully');
       setGameState('ready');
-    } catch {
-      setMicError('Microphone access is needed to hear your voice. Please allow microphone access and try again.');
+    } catch (err) {
+      console.error('[PitchLock] Microphone/audio init failed:', err);
+      const msg = err instanceof Error ? err.message : 'Unknown error';
+      setMicError(`Microphone access is needed to hear your voice. Please allow microphone access and try again. (${msg})`);
       setGameState('idle');
     }
   }, [handlePitch]);
 
-  const startGame = useCallback(() => {
+  const startGame = useCallback(async () => {
     setGameState('playing');
-    audioService.playReferenceTone(BEGINNER_NOTES[0]);
+    console.log('[PitchLock] Start button tapped — playing first reference tone');
+    await audioService.playReferenceTone(BEGINNER_NOTES[0]);
+    console.log('[PitchLock] Reference tone playback initiated');
   }, []);
 
-  const replayNote = useCallback(() => {
-    audioService.playReferenceTone(BEGINNER_NOTES[noteIndexRef.current]);
+  const replayNote = useCallback(async () => {
+    await audioService.playReferenceTone(BEGINNER_NOTES[noteIndexRef.current]);
   }, []);
 
   const finishGame = useCallback(() => {

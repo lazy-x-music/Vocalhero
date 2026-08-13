@@ -6,16 +6,22 @@ class AudioService {
   private ctx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
 
-  ensureContext(): AudioContext {
+  async ensureContext(): Promise<AudioContext> {
     if (!this.ctx) {
-      const Ctor = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      const Ctor =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       this.ctx = new Ctor();
       this.masterGain = this.ctx.createGain();
       this.masterGain.gain.value = 0.5;
       this.masterGain.connect(this.ctx.destination);
     }
     if (this.ctx.state === 'suspended') {
-      void this.ctx.resume();
+      try {
+        await this.ctx.resume();
+      } catch {
+        /* ignore — will retry on next user gesture */
+      }
     }
     return this.ctx;
   }
@@ -24,8 +30,8 @@ class AudioService {
     return this.ctx;
   }
 
-  playReferenceTone(note: string, durationMs = 1200): void {
-    const ctx = this.ensureContext();
+  async playReferenceTone(note: string, durationMs = 1200): Promise<void> {
+    const ctx = await this.ensureContext();
     const freq = noteStringToFrequency(note);
     if (freq <= 0) return;
 
@@ -52,8 +58,8 @@ class AudioService {
     osc.stop(now + duration + 0.05);
   }
 
-  playSuccessSound(): void {
-    const ctx = this.ensureContext();
+  async playSuccessSound(): Promise<void> {
+    const ctx = await this.ensureContext();
     const now = ctx.currentTime;
 
     const notes = [523.25, 659.25, 783.99];
@@ -75,8 +81,8 @@ class AudioService {
     });
   }
 
-  playUiClick(): void {
-    const ctx = this.ensureContext();
+  async playUiClick(): Promise<void> {
+    const ctx = await this.ensureContext();
     const now = ctx.currentTime;
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
@@ -91,8 +97,8 @@ class AudioService {
     osc.stop(now + 0.1);
   }
 
-  playPerfectRunSound(): void {
-    const ctx = this.ensureContext();
+  async playPerfectRunSound(): Promise<void> {
+    const ctx = await this.ensureContext();
     const now = ctx.currentTime;
     const notes = [523.25, 659.25, 783.99, 1046.5, 1318.51];
     notes.forEach((freq, i) => {
