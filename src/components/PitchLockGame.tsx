@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Mic, Play, RotateCcw, Volume2, Flame, Check, ArrowRight } from 'lucide-react';
+import { Mic, Play, RotateCcw, Volume2, Flame, ArrowRight } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { PitchIndicator } from '@/components/PitchIndicator';
 import { PitchDetector } from '@/lib/pitchDetector';
@@ -24,6 +24,8 @@ const HOLD_TIME_MS = 1000;
 const XP_PER_HIT = 10;
 const XP_PERFECT_BONUS = 25;
 const TOTAL_NOTES = BEGINNER_NOTES.length;
+const UI_UPDATE_MS = 100; // throttle React re-renders to 10fps
+const SMOOTH_FRAMES = 5; // median filter window for pitch smoothing
 
 export function PitchLockGame({ onComplete }: PitchLockGameProps) {
   const { user, refreshProfile } = useAuth();
@@ -42,6 +44,8 @@ export function PitchLockGame({ onComplete }: PitchLockGameProps) {
   const lockedRef = useRef(false);
   const noteIndexRef = useRef(0);
   const comboRef = useRef(0);
+  const lastUiUpdateRef = useRef(0);
+  const freqHistoryRef = useRef<number[]>([]);
 
   const targetNote = BEGINNER_NOTES[noteIndex];
   const targetFreq = noteStringToFrequency(targetNote);
@@ -54,44 +58,6 @@ export function PitchLockGame({ onComplete }: PitchLockGameProps) {
     comboRef.current = combo;
   }, [combo]);
 
-  const handlePitch = useCallback(
-    (freq: number) => {
-      if (lockedRef.current) return;
-
-      setDetectedFreq(freq);
-
-      if (freq <= 0) {
-        setCents(0);
-        holdStartRef.current = null;
-        return;
-      }
-
-      const currentTarget = BEGINNER_NOTES[noteIndexRef.current];
-      const currentTargetFreq = noteStringToFrequency(currentTarget);
-      const diff = centsDifference(currentTargetFreq, freq);
-      setCents(diff);
-
-      if (Math.abs(diff) <= TOLERANCE_CENTS) {
-        if (holdStartRef.current === null) {
-          holdStartRef.current = Date.now();
-        } else if (Date.now() - holdStartRef.current >= HOLD_TIME_MS) {
-          lockedRef.current = true;
-          handleHit();
-        }
-      } else {
-        holdStartRef.current = null;
-        if (diff > TOLERANCE_CENTS && diff < 200) {
-          setHitFeedback('A little lower');
-        } else if (diff < -TOLERANCE_CENTS && diff > -200) {
-          setHitFeedback('A little higher');
-        } else {
-          setHitFeedback(null);
-        }
-      }
-    },
-    []
-  );
-
   const handleHit = useCallback(async () => {
     const newCombo = comboRef.current + 1;
     comboRef.current = newCombo;
@@ -102,11 +68,9 @@ export function PitchLockGame({ onComplete }: PitchLockGameProps) {
     setGameState('locked');
 
     let xpThisHit = XP_PER_HIT;
-    let bonusXp = 0;
 
     if (newCombo >= TOTAL_NOTES) {
-      bonusXp = XP_PERFECT_BONUS;
-      xpThisHit += bonusXp;
+      xpThisHit += XP_PERFECT_BONUS;
       setGameState('perfect');
       void audioService.playPerfectRunSound();
     }
@@ -134,31 +98,96 @@ export function PitchLockGame({ onComplete }: PitchLockGameProps) {
     }, 1400);
   }, [user, refreshProfile]);
 
+  const handlePitch = useCallback(
+    (freq: number) => {
+      if (lockedRef.current) return;
+
+      // --- Pitch smoothing via median filter ---
+      let smoothFreq = 0;
+      if (freq > 0) {
+        const history = freqHistoryRef.current;
+        history.push(freq);
+        if (history.length > SMOOTH_FRAMES) history.shift();
+
+        // Median of recent frames
+        const sorted = [...history].sort((a, b) => a - b);
+        smoothFreq = sorted[Math.floor(sorted.length / 2)];
+      } else {
+        freqHistoryRef.current = [];
+      }
+
+      // --- Hold detection (runs every frame, not just on UI updates) ---
+      if (smoothFreq > 0) {
+        const currentTarget = BEGINNER_NOTES[noteIndexRef.current];
+        const currentTargetFreq = noteStringToFrequency(currentTarget);
+        const diff = centsDifference(currentTargetFreq, smoothFreq);
+
+        if (Math.abs(diff) <= TOLERANCE_CENTS) {
+          if (holdStartRef.current === null) {
+            holdStartRef.current = Date.now();
+          } else if (Date.now() - holdStartRef.current >= HOLD_TIME_MS) {
+            lockedRef.current = true;
+            void handleHit();
+            return;
+          }
+        } else {
+          holdStartRef.current = null;
+        }
+      } else {
+        holdStartRef.current = null;
+      }
+
+      // --- Throttle React state updates to 10fps ---
+      const now = Date.now();
+      if (now - lastUiUpdateRef.current < UI_UPDATE_MS) return;
+      lastUiUpdateRef.current = now;
+
+      setDetectedFreq(smoothFreq);
+
+      if (smoothFreq > 0) {
+        const currentTarget = BEGINNER_NOTES[noteIndexRef.current];
+        const currentTargetFreq = noteStringToFrequency(currentTarget);
+        const diff = centsDifference(currentTargetFreq, smoothFreq);
+        setCents(diff);
+
+        if (diff > TOLERANCE_CENTS && diff < 200) {
+          setHitFeedback('A little lower');
+        } else if (diff < -TOLERANCE_CENTS && diff > -200) {
+          setHitFeedback('A little higher');
+        } else if (Math.abs(diff) <= TOLERANCE_CENTS) {
+          setHitFeedback(null);
+        }
+      } else {
+        setCents(0);
+        setHitFeedback(null);
+      }
+    },
+    [handleHit]
+  );
+
   const enableMicrophone = useCallback(async () => {
     setGameState('requesting-mic');
     setMicError(null);
     try {
-      const ctx = await audioService.ensureContext();
-      console.log('[PitchLock] AudioContext state after ensureContext:', ctx.state);
+      await audioService.ensureContext();
 
       const detector = new PitchDetector();
       await detector.start(handlePitch);
       detectorRef.current = detector;
-      console.log('[PitchLock] PitchDetector started successfully');
       setGameState('ready');
     } catch (err) {
       console.error('[PitchLock] Microphone/audio init failed:', err);
       const msg = err instanceof Error ? err.message : 'Unknown error';
-      setMicError(`Microphone access is needed to hear your voice. Please allow microphone access and try again. (${msg})`);
+      setMicError(
+        `Microphone access is needed to hear your voice. Please allow microphone access and try again. (${msg})`
+      );
       setGameState('idle');
     }
   }, [handlePitch]);
 
   const startGame = useCallback(async () => {
     setGameState('playing');
-    console.log('[PitchLock] Start button tapped — playing first reference tone');
     await audioService.playReferenceTone(BEGINNER_NOTES[0]);
-    console.log('[PitchLock] Reference tone playback initiated');
   }, []);
 
   const replayNote = useCallback(async () => {
@@ -173,7 +202,7 @@ export function PitchLockGame({ onComplete }: PitchLockGameProps) {
     onComplete();
   }, [onComplete]);
 
-  // Cleanup on unmount
+  // Cleanup on unmount — stop mic, release resources
   useEffect(() => {
     return () => {
       if (detectorRef.current) {
@@ -190,7 +219,9 @@ export function PitchLockGame({ onComplete }: PitchLockGameProps) {
     <div className="flex-1 flex flex-col">
       {/* Header */}
       <div className="mb-4">
-        <span className="text-xs uppercase tracking-widest text-accent font-bold">Stage 2 — Pitch Lock</span>
+        <span className="text-xs uppercase tracking-widest text-accent font-bold">
+          Stage 2 — Pitch Lock
+        </span>
         <h1 className="text-3xl font-bold font-display mt-1">PITCH LOCK</h1>
         <p className="text-text-secondary mt-1">Match the note.</p>
       </div>
@@ -199,7 +230,9 @@ export function PitchLockGame({ onComplete }: PitchLockGameProps) {
       <div className="mb-4">
         <div className="flex items-center justify-between mb-1.5">
           <span className="text-xs font-semibold text-text-muted">Notes</span>
-          <span className="text-xs font-semibold text-text-secondary">{Math.min(noteIndex, TOTAL_NOTES)} / {TOTAL_NOTES}</span>
+          <span className="text-xs font-semibold text-text-secondary">
+            {Math.min(noteIndex, TOTAL_NOTES)} / {TOTAL_NOTES}
+          </span>
         </div>
         <div className="h-1.5 rounded-full bg-bg-tertiary overflow-hidden">
           <div
@@ -213,7 +246,9 @@ export function PitchLockGame({ onComplete }: PitchLockGameProps) {
       {combo > 0 && gameState !== 'idle' && (
         <div className="flex items-center justify-center gap-2 mb-3">
           <Flame size={18} className="text-accent" />
-          <span className="text-lg font-bold font-display text-accent">{combo} HIT{combo > 1 ? 'S' : ''}</span>
+          <span className="text-lg font-bold font-display text-accent">
+            {combo} HIT{combo > 1 ? 'S' : ''}
+          </span>
           {totalXpEarned > 0 && (
             <span className="text-sm text-xp font-semibold ml-2">+{totalXpEarned} XP</span>
           )}
@@ -223,7 +258,9 @@ export function PitchLockGame({ onComplete }: PitchLockGameProps) {
       {/* Target note */}
       <div className="flex items-center justify-center gap-3 mb-2">
         <div className="text-center">
-          <p className="text-xs uppercase tracking-widest text-text-muted font-semibold mb-1">Target Note</p>
+          <p className="text-xs uppercase tracking-widest text-text-muted font-semibold mb-1">
+            Target Note
+          </p>
           <p className="text-6xl font-extrabold font-display text-accent">{targetNote}</p>
           <p className="text-xs text-text-muted tabular-nums mt-1">{Math.round(targetFreq)} Hz</p>
         </div>
@@ -255,7 +292,9 @@ export function PitchLockGame({ onComplete }: PitchLockGameProps) {
           </p>
           <p className="text-sm text-xp font-semibold mt-1">+{XP_PER_HIT} XP</p>
           {gameState === 'perfect' && (
-            <p className="text-lg font-bold font-display text-accent mt-2">PERFECT RUN! +{XP_PERFECT_BONUS} XP</p>
+            <p className="text-lg font-bold font-display text-accent mt-2">
+              PERFECT RUN! +{XP_PERFECT_BONUS} XP
+            </p>
           )}
         </div>
       )}
@@ -268,11 +307,10 @@ export function PitchLockGame({ onComplete }: PitchLockGameProps) {
               Enable Microphone
             </Button>
             <p className="text-xs text-text-muted text-center px-4">
-              We use your microphone to hear your voice and detect pitch in real time. Audio stays in your browser and is never recorded or uploaded.
+              We use your microphone to hear your voice and detect pitch in real time. Audio stays in
+              your browser and is never recorded or uploaded.
             </p>
-            {micError && (
-              <p className="text-sm text-accent text-center">{micError}</p>
-            )}
+            {micError && <p className="text-sm text-accent text-center">{micError}</p>}
           </>
         )}
 
@@ -283,11 +321,21 @@ export function PitchLockGame({ onComplete }: PitchLockGameProps) {
         {gameState === 'ready' && (
           <>
             {combo >= TOTAL_NOTES ? (
-              <Button fullWidth size="xl" onClick={finishGame} rightIcon={<ArrowRight size={20} />}>
+              <Button
+                fullWidth
+                size="xl"
+                onClick={finishGame}
+                rightIcon={<ArrowRight size={20} />}
+              >
                 Continue to Stage 3
               </Button>
             ) : (
-              <Button fullWidth size="xl" onClick={startGame} leftIcon={<Play size={20} />}>
+              <Button
+                fullWidth
+                size="xl"
+                onClick={startGame}
+                leftIcon={<Play size={20} />}
+              >
                 Start Pitch Lock
               </Button>
             )}
@@ -296,10 +344,20 @@ export function PitchLockGame({ onComplete }: PitchLockGameProps) {
 
         {gameState === 'playing' && (
           <div className="flex gap-3">
-            <Button size="lg" variant="secondary" onClick={replayNote} leftIcon={<Volume2 size={18} />}>
+            <Button
+              size="lg"
+              variant="secondary"
+              onClick={replayNote}
+              leftIcon={<Volume2 size={18} />}
+            >
               Replay
             </Button>
-            <Button size="lg" variant="ghost" onClick={finishGame} rightIcon={<ArrowRight size={18} />}>
+            <Button
+              size="lg"
+              variant="ghost"
+              onClick={finishGame}
+              rightIcon={<ArrowRight size={18} />}
+            >
               Continue
             </Button>
           </div>
@@ -307,7 +365,12 @@ export function PitchLockGame({ onComplete }: PitchLockGameProps) {
 
         {(gameState === 'locked' || gameState === 'perfect') && (
           <div className="flex gap-3">
-            <Button size="lg" variant="secondary" onClick={replayNote} leftIcon={<RotateCcw size={18} />}>
+            <Button
+              size="lg"
+              variant="secondary"
+              onClick={replayNote}
+              leftIcon={<RotateCcw size={18} />}
+            >
               Replay
             </Button>
           </div>

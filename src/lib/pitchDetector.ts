@@ -5,6 +5,7 @@ export type PitchDetectionCallback = (frequency: number, confidence: number) => 
 const MIN_FREQ = 70;
 const MAX_FREQ = 1000;
 const BUFFER_SIZE = 2048;
+const RMS_THRESHOLD = 0.008;
 
 export class PitchDetector {
   private audioCtx: AudioContext | null = null;
@@ -18,7 +19,6 @@ export class PitchDetector {
   async start(onPitch: PitchDetectionCallback): Promise<void> {
     if (this.running) return;
 
-    // Use the shared AudioContext from audioService so iOS only has one context
     this.audioCtx = await audioService.ensureContext();
 
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -34,13 +34,18 @@ export class PitchDetector {
         },
       });
     } catch {
-      // Fallback: iOS sometimes rejects constrained audio — try plain audio: true
       this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    }
+
+    // Re-resume the context — getUserMedia can cause iOS to suspend it
+    if (this.audioCtx.state === 'suspended') {
+      await this.audioCtx.resume();
     }
 
     this.source = this.audioCtx.createMediaStreamSource(this.mediaStream);
     this.analyser = this.audioCtx.createAnalyser();
     this.analyser.fftSize = BUFFER_SIZE;
+    this.analyser.smoothingTimeConstant = 0;
     this.source.connect(this.analyser);
     this.buffer = new Float32Array(new ArrayBuffer(this.analyser.fftSize * 4));
 
@@ -66,61 +71,78 @@ export class PitchDetector {
   private detectPitch(buffer: Float32Array): number {
     const SIZE = buffer.length;
 
+    // RMS check — reject silence
     let rms = 0;
     for (let i = 0; i < SIZE; i++) {
       rms += buffer[i] * buffer[i];
     }
     rms = Math.sqrt(rms / SIZE);
-    if (rms < 0.01) return -1;
+    if (rms < RMS_THRESHOLD) return -1;
 
-    const bestOffset = this.autocorrelate(buffer);
-    if (bestOffset === -1) return -1;
-
-    const sampleRate = this.audioCtx?.sampleRate ?? 44100;
-    const freq = sampleRate / bestOffset;
-    if (freq < MIN_FREQ || freq > MAX_FREQ) return -1;
-    return freq;
+    return this.autocorrelate(buffer);
   }
 
   private autocorrelate(buf: Float32Array): number {
     const SIZE = buf.length;
     const sampleRate = this.audioCtx?.sampleRate ?? 44100;
 
+    // Remove DC offset (mean) so correlation is meaningful
+    let mean = 0;
+    for (let i = 0; i < SIZE; i++) mean += buf[i];
+    mean /= SIZE;
+
+    const normalized = new Float32Array(SIZE);
+    let energy = 0;
+    for (let i = 0; i < SIZE; i++) {
+      const v = buf[i] - mean;
+      normalized[i] = v;
+      energy += v * v;
+    }
+    if (energy <= 0) return -1;
+
     const minOffset = Math.floor(sampleRate / MAX_FREQ);
-    const maxOffset = Math.floor(sampleRate / MIN_FREQ);
+    const maxOffset = Math.min(Math.floor(sampleRate / MIN_FREQ), SIZE - 1);
 
-    let bestCorrelation = 0;
+    let bestCorrelation = -1;
     let bestOffset = -1;
-    let foundGoodCorrelation = false;
-    const correlations: number[] = [];
 
-    for (let offset = minOffset; offset <= maxOffset && offset < SIZE; offset++) {
+    const correlations: number[] = new Array(maxOffset + 1);
+
+    for (let offset = minOffset; offset <= maxOffset; offset++) {
       let correlation = 0;
       for (let i = 0; i < SIZE - offset; i++) {
-        correlation += buf[i] * buf[i + offset];
+        correlation += normalized[i] * normalized[i + offset];
       }
-      correlation = correlation / (SIZE - offset);
-      correlations.push(correlation);
+      // Normalize by the energy so correlation is in [-1, 1]
+      correlation = correlation / energy;
+      correlations[offset] = correlation;
 
-      if (correlation > 0.9 && correlation > bestCorrelation) {
+      if (correlation > bestCorrelation) {
         bestCorrelation = correlation;
         bestOffset = offset;
-        foundGoodCorrelation = true;
-      } else if (foundGoodCorrelation && correlation < bestCorrelation) {
-        const shift =
-          (correlations[correlations.length - 2] -
-            correlations[correlations.length - 1] * 2 -
-            correlations[correlations.length - 3]) /
-          (2 * (correlations[correlations.length - 1] - correlations[correlations.length - 3]));
-        return bestOffset + shift;
       }
     }
 
-    if (bestCorrelation > 0.01) {
-      return bestOffset;
+    // Need a reasonably strong periodic signal
+    if (bestCorrelation < 0.5) return -1;
+
+    // Parabolic interpolation around the peak for sub-sample accuracy
+    if (bestOffset > minOffset && bestOffset < maxOffset) {
+      const prev = correlations[bestOffset - 1];
+      const curr = correlations[bestOffset];
+      const next = correlations[bestOffset + 1];
+      const denom = 2 * (2 * curr - next - prev);
+      if (denom !== 0) {
+        const shift = (next - prev) / denom;
+        const interpolatedOffset = bestOffset + shift;
+        const freq = sampleRate / interpolatedOffset;
+        if (freq >= MIN_FREQ && freq <= MAX_FREQ) return freq;
+      }
     }
 
-    return -1;
+    const freq = sampleRate / bestOffset;
+    if (freq < MIN_FREQ || freq > MAX_FREQ) return -1;
+    return freq;
   }
 
   stop(): void {
@@ -141,7 +163,6 @@ export class PitchDetector {
       this.analyser.disconnect();
       this.analyser = null;
     }
-    // Do NOT close the shared AudioContext — audioService owns it.
     this.audioCtx = null;
     this.buffer = null;
   }
