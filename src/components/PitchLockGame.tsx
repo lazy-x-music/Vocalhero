@@ -38,6 +38,8 @@ export function PitchLockGame({ onComplete }: PitchLockGameProps) {
   const [hitFeedback, setHitFeedback] = useState<string | null>(null);
   const [micError, setMicError] = useState<string | null>(null);
   const [totalXpEarned, setTotalXpEarned] = useState(0);
+  const [inputLevel, setInputLevel] = useState(0);
+  const [micActive, setMicActive] = useState(false);
 
   const detectorRef = useRef<PitchDetector | null>(null);
   const holdStartRef = useRef<number | null>(null);
@@ -99,7 +101,7 @@ export function PitchLockGame({ onComplete }: PitchLockGameProps) {
   }, [user, refreshProfile]);
 
   const handlePitch = useCallback(
-    (freq: number) => {
+    (freq: number, level: number) => {
       if (lockedRef.current) return;
 
       // --- Pitch smoothing via median filter ---
@@ -109,7 +111,6 @@ export function PitchLockGame({ onComplete }: PitchLockGameProps) {
         history.push(freq);
         if (history.length > SMOOTH_FRAMES) history.shift();
 
-        // Median of recent frames
         const sorted = [...history].sort((a, b) => a - b);
         smoothFreq = sorted[Math.floor(sorted.length / 2)];
       } else {
@@ -143,6 +144,7 @@ export function PitchLockGame({ onComplete }: PitchLockGameProps) {
       lastUiUpdateRef.current = now;
 
       setDetectedFreq(smoothFreq);
+      setInputLevel(level);
 
       if (smoothFreq > 0) {
         const currentTarget = BEGINNER_NOTES[noteIndexRef.current];
@@ -169,28 +171,43 @@ export function PitchLockGame({ onComplete }: PitchLockGameProps) {
     setGameState('requesting-mic');
     setMicError(null);
     try {
+      // Ensure AudioContext is created and resumed from this user gesture
       await audioService.ensureContext();
 
       const detector = new PitchDetector();
       await detector.start(handlePitch);
       detectorRef.current = detector;
+      setMicActive(true);
       setGameState('ready');
     } catch (err) {
       console.error('[PitchLock] Microphone/audio init failed:', err);
-      const msg = err instanceof Error ? err.message : 'Unknown error';
-      setMicError(
-        `Microphone access is needed to hear your voice. Please allow microphone access and try again. (${msg})`
-      );
+      let msg = 'Unknown error';
+      if (err instanceof Error) {
+        if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+          msg = 'Microphone permission was denied. Please allow microphone access in your browser settings and try again.';
+        } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+          msg = 'No microphone was found on this device.';
+        } else if (err.name === 'NotReadableError') {
+          msg = 'Your microphone is being used by another app. Please close it and try again.';
+        } else {
+          msg = err.message;
+        }
+      }
+      setMicError(msg);
+      setMicActive(false);
       setGameState('idle');
     }
   }, [handlePitch]);
 
   const startGame = useCallback(async () => {
+    // Resume context from user gesture before playing tone (iOS requirement)
+    await audioService.ensureContext();
     setGameState('playing');
     await audioService.playReferenceTone(BEGINNER_NOTES[0]);
   }, []);
 
   const replayNote = useCallback(async () => {
+    await audioService.ensureContext();
     await audioService.playReferenceTone(BEGINNER_NOTES[noteIndexRef.current]);
   }, []);
 
@@ -199,6 +216,7 @@ export function PitchLockGame({ onComplete }: PitchLockGameProps) {
       detectorRef.current.stop();
       detectorRef.current = null;
     }
+    setMicActive(false);
     onComplete();
   }, [onComplete]);
 
@@ -214,6 +232,7 @@ export function PitchLockGame({ onComplete }: PitchLockGameProps) {
 
   const detectedNote = detectedFreq > 0 ? frequencyToNoteString(detectedFreq) : null;
   const progress = (noteIndex / TOTAL_NOTES) * 100;
+  const levelPercent = Math.min(100, Math.round(inputLevel * 500));
 
   return (
     <div className="flex-1 flex flex-col">
@@ -276,6 +295,27 @@ export function PitchLockGame({ onComplete }: PitchLockGameProps) {
           frequency={detectedFreq > 0 ? detectedFreq : null}
         />
       </div>
+
+      {/* Debug info panel */}
+      {micActive && gameState !== 'idle' && (
+        <div className="rounded-xl bg-bg-tertiary border border-border p-3 mb-2 text-xs font-mono text-text-muted space-y-1">
+          <div className="flex justify-between">
+            <span>Mic: <span className="text-success font-bold">ACTIVE</span></span>
+            <span>Level: {levelPercent}%</span>
+          </div>
+          <div className="h-1.5 rounded-full bg-bg overflow-hidden">
+            <div
+              className="h-full rounded-full bg-accent transition-all duration-100"
+              style={{ width: `${levelPercent}%` }}
+            />
+          </div>
+          <div className="flex justify-between pt-1">
+            <span>Freq: {detectedFreq > 0 ? `${Math.round(detectedFreq)} Hz` : '—'}</span>
+            <span>Note: {detectedNote ?? '—'}</span>
+            <span>Cents: {detectedFreq > 0 ? cents : '—'}</span>
+          </div>
+        </div>
+      )}
 
       {/* Feedback */}
       {hitFeedback && gameState === 'playing' && (

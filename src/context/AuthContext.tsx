@@ -48,17 +48,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   useEffect(() => {
-    const unsub = subscribeToAuthChanges(async (u) => {
+    let cancelled = false;
+    const unsub = subscribeToAuthChanges((u) => {
       setUser(u);
       if (u) {
-        const p = await getUserProfile(u.uid);
-        setProfile(p);
+        getUserProfile(u.uid).then((p) => {
+          if (!cancelled) setProfile(p);
+        });
       } else {
         setProfile(null);
       }
-      setLoading(false);
+      if (!cancelled) setLoading(false);
     });
-    return unsub;
+    return () => {
+      cancelled = true;
+      unsub();
+    };
   }, []);
 
   // Keep local auth display name in sync when profile updates
