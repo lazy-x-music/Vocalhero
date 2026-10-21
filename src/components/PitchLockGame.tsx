@@ -101,7 +101,7 @@ export function PitchLockGame({ onComplete }: PitchLockGameProps) {
   }, [user, refreshProfile]);
 
   const handlePitch = useCallback(
-    (freq: number, level: number) => {
+    (freq: number, level: number, _confidence: number) => {
       if (lockedRef.current) return;
 
       // --- Pitch smoothing via median filter ---
@@ -297,7 +297,7 @@ export function PitchLockGame({ onComplete }: PitchLockGameProps) {
       </div>
 
       {/* Debug info panel */}
-      {micActive && gameState !== 'idle' && (
+      {micActive && (
         <div className="rounded-xl bg-bg-tertiary border border-border p-3 mb-2 text-xs font-mono text-text-muted space-y-1">
           <div className="flex justify-between">
             <span>Mic: <span className="text-success font-bold">ACTIVE</span></span>

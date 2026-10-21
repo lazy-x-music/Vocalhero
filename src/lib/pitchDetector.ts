@@ -14,6 +14,8 @@ export class PitchDetector {
   private source: MediaStreamAudioSourceNode | null = null;
   private analyser: AnalyserNode | null = null;
   private buffer: Float32Array | null = null;
+  private normBuffer: Float32Array | null = null;
+  private corrBuffer: Float32Array | null = null;
   private rafId: number | null = null;
   private running = false;
   private inputLevel = 0;
@@ -28,7 +30,7 @@ export class PitchDetector {
       throw new Error('Microphone API not available in this browser.');
     }
 
-    // Request microphone with processing disabled for cleaner pitch detection
+    // Request microphone — video:false is explicit so iOS doesn't prompt for camera
     try {
       this.mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -36,10 +38,11 @@ export class PitchDetector {
           noiseSuppression: false,
           autoGainControl: false,
         },
+        video: false,
       });
     } catch {
-      // Fallback: some iOS Safari versions reject the constraints object
-      this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Fallback: some older iOS Safari versions reject extended constraints
+      this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
     }
 
     // getUserMedia can cause iOS Safari to suspend the context — resume immediately
@@ -47,7 +50,7 @@ export class PitchDetector {
       try {
         await this.audioCtx.resume();
       } catch {
-        // Will retry on next frame; the analyser just won't produce data yet
+        // Will retry on next animation frame
       }
     }
 
@@ -57,8 +60,11 @@ export class PitchDetector {
     this.analyser.smoothingTimeConstant = 0.7;
     this.source.connect(this.analyser);
 
-    // Allocate buffer once and reuse — avoid per-frame allocation
-    this.buffer = new Float32Array(this.analyser.fftSize);
+    // Pre-allocate all buffers once to avoid per-frame GC pressure on mobile
+    const fftSize = this.analyser.fftSize;
+    this.buffer = new Float32Array(fftSize);
+    this.normBuffer = new Float32Array(fftSize);
+    this.corrBuffer = new Float32Array(fftSize);
 
     this.running = true;
     this.loop(onPitch);
@@ -114,17 +120,18 @@ export class PitchDetector {
   private autocorrelate(buf: Float32Array): number {
     const SIZE = buf.length;
     const sampleRate = this.audioCtx?.sampleRate ?? 44100;
+    const norm = this.normBuffer!;
+    const correlations = this.corrBuffer!;
 
-    // Remove DC offset
+    // Remove DC offset into pre-allocated buffer
     let mean = 0;
     for (let i = 0; i < SIZE; i++) mean += buf[i];
     mean /= SIZE;
 
-    const normalized = new Float32Array(SIZE);
     let energy = 0;
     for (let i = 0; i < SIZE; i++) {
       const v = buf[i] - mean;
-      normalized[i] = v;
+      norm[i] = v;
       energy += v * v;
     }
     if (energy <= 0) return 0;
@@ -135,12 +142,10 @@ export class PitchDetector {
     let bestCorrelation = -Infinity;
     let bestOffset = -1;
 
-    const correlations = new Float32Array(maxOffset + 1);
-
     for (let offset = minOffset; offset <= maxOffset; offset++) {
       let correlation = 0;
       for (let i = 0; i < SIZE - offset; i++) {
-        correlation += normalized[i] * normalized[i + offset];
+        correlation += norm[i] * norm[i + offset];
       }
       correlation = correlation / energy;
       correlations[offset] = correlation;
@@ -202,6 +207,8 @@ export class PitchDetector {
     // with the reference tone / success sound oscillators.
     this.audioCtx = null;
     this.buffer = null;
+    this.normBuffer = null;
+    this.corrBuffer = null;
     this.inputLevel = 0;
   }
 }
