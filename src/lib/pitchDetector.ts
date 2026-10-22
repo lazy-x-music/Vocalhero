@@ -2,11 +2,11 @@ import { audioService } from './audioService';
 
 export type PitchDetectionCallback = (frequency: number, level: number, confidence: number) => void;
 
-const MIN_FREQ = 70;
+const MIN_FREQ = 65;
 const MAX_FREQ = 1000;
-const BUFFER_SIZE = 2048;
-const RMS_THRESHOLD = 0.01;
-const CORRELATION_THRESHOLD = 0.9;
+const BUFFER_SIZE = 4096;
+const RMS_THRESHOLD = 0.015;
+const YIN_THRESHOLD = 0.15;
 
 export class PitchDetector {
   private audioCtx: AudioContext | null = null;
@@ -14,23 +14,21 @@ export class PitchDetector {
   private source: MediaStreamAudioSourceNode | null = null;
   private analyser: AnalyserNode | null = null;
   private buffer: Float32Array | null = null;
-  private normBuffer: Float32Array | null = null;
-  private corrBuffer: Float32Array | null = null;
+  private yinBuffer: Float32Array | null = null;
   private rafId: number | null = null;
   private running = false;
   private inputLevel = 0;
+  private lastFreq = 0;
 
   async start(onPitch: PitchDetectionCallback): Promise<void> {
     if (this.running) return;
 
-    // Ensure AudioContext is created and resumed from the user gesture chain
     this.audioCtx = await audioService.ensureContext();
 
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       throw new Error('Microphone API not available in this browser.');
     }
 
-    // Request microphone — video:false is explicit so iOS doesn't prompt for camera
     try {
       this.mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -41,11 +39,9 @@ export class PitchDetector {
         video: false,
       });
     } catch {
-      // Fallback: some older iOS Safari versions reject extended constraints
       this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
     }
 
-    // getUserMedia can cause iOS Safari to suspend the context — resume immediately
     if (this.audioCtx.state === 'suspended') {
       try {
         await this.audioCtx.resume();
@@ -57,14 +53,14 @@ export class PitchDetector {
     this.source = this.audioCtx.createMediaStreamSource(this.mediaStream);
     this.analyser = this.audioCtx.createAnalyser();
     this.analyser.fftSize = BUFFER_SIZE;
-    this.analyser.smoothingTimeConstant = 0.7;
+    // No smoothing — we need the raw waveform for accurate autocorrelation/YIN
+    this.analyser.smoothingTimeConstant = 0;
     this.source.connect(this.analyser);
 
-    // Pre-allocate all buffers once to avoid per-frame GC pressure on mobile
     const fftSize = this.analyser.fftSize;
     this.buffer = new Float32Array(fftSize);
-    this.normBuffer = new Float32Array(fftSize);
-    this.corrBuffer = new Float32Array(fftSize);
+    // YIN difference function buffer is half the size
+    this.yinBuffer = new Float32Array(fftSize / 2);
 
     this.running = true;
     this.loop(onPitch);
@@ -81,7 +77,6 @@ export class PitchDetector {
   private loop(onPitch: PitchDetectionCallback): void {
     if (!this.running || !this.analyser || !this.buffer) return;
 
-    // Re-resume if iOS suspended the context mid-session
     if (this.audioCtx && this.audioCtx.state === 'suspended') {
       void this.audioCtx.resume();
     }
@@ -98,7 +93,6 @@ export class PitchDetector {
   private analyze(buffer: Float32Array): { freq: number; level: number; confidence: number } {
     const SIZE = buffer.length;
 
-    // RMS volume / input level
     let rms = 0;
     for (let i = 0; i < SIZE; i++) {
       rms += buffer[i] * buffer[i];
@@ -109,70 +103,95 @@ export class PitchDetector {
       return { freq: 0, level: rms, confidence: 0 };
     }
 
-    const freq = this.autocorrelate(buffer);
-    return {
-      freq,
-      level: rms,
-      confidence: freq > 0 ? 1 : 0,
-    };
+    const freq = this.yinDetect(buffer);
+    if (freq <= 0) {
+      return { freq: 0, level: rms, confidence: 0 };
+    }
+
+    // Octave-jump suppression: if new detection is ~2x or ~0.5x the last
+    // stable frequency (i.e. ±1200 cents), trust the previous reading
+    // for a few frames rather than jumping. This prevents the common
+    // autocorrelation/YIN artifact of locking onto a harmonic.
+    if (this.lastFreq > 0) {
+      const ratio = freq / this.lastFreq;
+      if (ratio > 1.8 && ratio < 2.2) {
+        // Octave-up jump — reject, keep last
+        return { freq: this.lastFreq, level: rms, confidence: 0.5 };
+      }
+      if (ratio > 0.45 && ratio < 0.55) {
+        // Octave-down jump — reject, keep last
+        return { freq: this.lastFreq, level: rms, confidence: 0.5 };
+      }
+    }
+
+    this.lastFreq = freq;
+    return { freq, level: rms, confidence: 1 };
   }
 
-  private autocorrelate(buf: Float32Array): number {
+  /**
+   * YIN pitch detection algorithm.
+   * Step 1: Difference function d(tau) = sum (x[j] - x[j+tau])^2
+   * Step 2: Cumulative mean normalized difference function d'(tau)
+   * Step 3: Absolute threshold — pick first tau where d'(tau) < threshold
+   * Step 4: Parabolic interpolation around the minimum
+   */
+  private yinDetect(buf: Float32Array): number {
     const SIZE = buf.length;
+    const halfSize = SIZE / 2;
     const sampleRate = this.audioCtx?.sampleRate ?? 44100;
-    const norm = this.normBuffer!;
-    const correlations = this.corrBuffer!;
+    const yin = this.yinBuffer!;
 
-    // Remove DC offset into pre-allocated buffer
-    let mean = 0;
-    for (let i = 0; i < SIZE; i++) mean += buf[i];
-    mean /= SIZE;
+    const minTau = Math.floor(sampleRate / MAX_FREQ);
+    const maxTau = Math.min(Math.floor(sampleRate / MIN_FREQ), halfSize - 1);
 
-    let energy = 0;
-    for (let i = 0; i < SIZE; i++) {
-      const v = buf[i] - mean;
-      norm[i] = v;
-      energy += v * v;
-    }
-    if (energy <= 0) return 0;
-
-    const minOffset = Math.floor(sampleRate / MAX_FREQ);
-    const maxOffset = Math.min(Math.floor(sampleRate / MIN_FREQ), SIZE - 1);
-
-    let bestCorrelation = -Infinity;
-    let bestOffset = -1;
-
-    for (let offset = minOffset; offset <= maxOffset; offset++) {
-      let correlation = 0;
-      for (let i = 0; i < SIZE - offset; i++) {
-        correlation += norm[i] * norm[i + offset];
+    // Step 1: Difference function
+    for (let tau = 0; tau < halfSize; tau++) {
+      let sum = 0;
+      for (let i = 0; i < halfSize; i++) {
+        const diff = buf[i] - buf[i + tau];
+        sum += diff * diff;
       }
-      correlation = correlation / energy;
-      correlations[offset] = correlation;
-
-      if (correlation > bestCorrelation) {
-        bestCorrelation = correlation;
-        bestOffset = offset;
-      }
+      yin[tau] = sum;
     }
 
-    if (bestCorrelation < CORRELATION_THRESHOLD || bestOffset < 0) return 0;
+    // Step 2: Cumulative mean normalized difference
+    yin[0] = 1;
+    let runningSum = 0;
+    for (let tau = 1; tau < halfSize; tau++) {
+      runningSum += yin[tau];
+      yin[tau] = yin[tau] / (runningSum / tau);
+    }
 
-    // Parabolic interpolation for sub-sample accuracy
-    if (bestOffset > minOffset && bestOffset < maxOffset) {
-      const prev = correlations[bestOffset - 1];
-      const curr = correlations[bestOffset];
-      const next = correlations[bestOffset + 1];
+    // Step 3: Absolute threshold — find first dip below threshold
+    let bestTau = -1;
+    for (let tau = minTau; tau <= maxTau; tau++) {
+      if (yin[tau] < YIN_THRESHOLD) {
+        // Find the local minimum in this valley
+        while (tau + 1 <= maxTau && yin[tau + 1] < yin[tau]) {
+          tau++;
+        }
+        bestTau = tau;
+        break;
+      }
+    }
+
+    if (bestTau < 0) return 0;
+
+    // Step 4: Parabolic interpolation
+    if (bestTau > minTau && bestTau < maxTau) {
+      const prev = yin[bestTau - 1];
+      const curr = yin[bestTau];
+      const next = yin[bestTau + 1];
       const denom = 2 * (2 * curr - next - prev);
       if (denom !== 0) {
         const shift = (next - prev) / denom;
-        const interpolatedOffset = bestOffset + shift;
-        const freq = sampleRate / interpolatedOffset;
+        const interpolatedTau = bestTau + shift;
+        const freq = sampleRate / interpolatedTau;
         if (freq >= MIN_FREQ && freq <= MAX_FREQ) return freq;
       }
     }
 
-    const freq = sampleRate / bestOffset;
+    const freq = sampleRate / bestTau;
     if (freq < MIN_FREQ || freq > MAX_FREQ) return 0;
     return freq;
   }
@@ -184,11 +203,7 @@ export class PitchDetector {
       this.rafId = null;
     }
     if (this.source) {
-      try {
-        this.source.disconnect();
-      } catch {
-        // Already disconnected
-      }
+      try { this.source.disconnect(); } catch { /* already disconnected */ }
       this.source = null;
     }
     if (this.mediaStream) {
@@ -196,19 +211,13 @@ export class PitchDetector {
       this.mediaStream = null;
     }
     if (this.analyser) {
-      try {
-        this.analyser.disconnect();
-      } catch {
-        // Already disconnected
-      }
+      try { this.analyser.disconnect(); } catch { /* already disconnected */ }
       this.analyser = null;
     }
-    // Do NOT close the AudioContext — it's owned by audioService and shared
-    // with the reference tone / success sound oscillators.
     this.audioCtx = null;
     this.buffer = null;
-    this.normBuffer = null;
-    this.corrBuffer = null;
+    this.yinBuffer = null;
     this.inputLevel = 0;
+    this.lastFreq = 0;
   }
 }

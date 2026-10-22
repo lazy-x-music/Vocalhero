@@ -1,8 +1,9 @@
 import { NavLink } from 'react-router-dom';
-import { LayoutDashboard, Dumbbell, TrendingUp, Trophy, User } from 'lucide-react';
+import { LayoutDashboard, Dumbbell, TrendingUp, Trophy, User, Music } from 'lucide-react';
 
 const navItems = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { to: '/riff-highway', label: 'Riff Highway', icon: Music },
   { to: '/train', label: 'Train', icon: Dumbbell },
   { to: '/progress', label: 'Progress', icon: TrendingUp },
   { to: '/achievements', label: 'Achievements', icon: Trophy },

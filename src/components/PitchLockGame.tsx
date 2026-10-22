@@ -25,7 +25,7 @@ const XP_PER_HIT = 10;
 const XP_PERFECT_BONUS = 25;
 const TOTAL_NOTES = BEGINNER_NOTES.length;
 const UI_UPDATE_MS = 100; // throttle React re-renders to 10fps
-const SMOOTH_FRAMES = 5; // median filter window for pitch smoothing
+const SMOOTH_FRAMES = 7; // median filter window for pitch smoothing
 
 export function PitchLockGame({ onComplete }: PitchLockGameProps) {
   const { user, refreshProfile } = useAuth();
@@ -199,6 +199,11 @@ export function PitchLockGame({ onComplete }: PitchLockGameProps) {
     }
   }, [handlePitch]);
 
+  const playTargetNote = useCallback(async () => {
+    await audioService.ensureContext();
+    await audioService.playReferenceTone(BEGINNER_NOTES[noteIndexRef.current]);
+  }, []);
+
   const startGame = useCallback(async () => {
     // Resume context from user gesture before playing tone (iOS requirement)
     await audioService.ensureContext();
@@ -370,14 +375,25 @@ export function PitchLockGame({ onComplete }: PitchLockGameProps) {
                 Continue to Stage 3
               </Button>
             ) : (
-              <Button
-                fullWidth
-                size="xl"
-                onClick={startGame}
-                leftIcon={<Play size={20} />}
-              >
-                Start Pitch Lock
-              </Button>
+              <>
+                <Button
+                  fullWidth
+                  size="xl"
+                  onClick={startGame}
+                  leftIcon={<Play size={20} />}
+                >
+                  Start Pitch Lock
+                </Button>
+                <Button
+                  fullWidth
+                  size="lg"
+                  variant="secondary"
+                  onClick={playTargetNote}
+                  leftIcon={<Volume2 size={18} />}
+                >
+                  Play Target Note ({targetNote})
+                </Button>
+              </>
             )}
           </>
         )}

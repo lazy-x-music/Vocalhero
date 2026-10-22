@@ -10,7 +10,8 @@ import { DashboardPage } from '@/pages/DashboardPage';
 import { ProfilePage } from '@/pages/ProfilePage';
 import { PlaceholderPage } from '@/pages/PlaceholderPage';
 import { WorkoutPage } from '@/pages/WorkoutPage';
-import { Dumbbell, TrendingUp, Trophy } from 'lucide-react';
+import { Dumbbell, TrendingUp, Trophy, Music } from 'lucide-react';
+import { RiffHighwayPage } from '@/pages/RiffHighwayPage';
 
 function RequireAuth({ children }: { children: ReactNode }) {
   const { user, loading } = useAuth();
@@ -126,6 +127,16 @@ function AppRoutes() {
             <RequireAuth>
               <RequireOnboarding>
                 <ProfilePage />
+              </RequireOnboarding>
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/riff-highway"
+          element={
+            <RequireAuth>
+              <RequireOnboarding>
+                <RiffHighwayPage />
               </RequireOnboarding>
             </RequireAuth>
           }

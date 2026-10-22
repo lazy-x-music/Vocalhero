@@ -30,25 +30,31 @@ class AudioService {
     return this.ctx;
   }
 
-  async playReferenceTone(note: string, durationMs = 1200): Promise<void> {
+  async playReferenceTone(note: string, durationMs = 1500): Promise<void> {
     const ctx = await this.ensureContext();
+    if (ctx.state !== 'running') {
+      try { await ctx.resume(); } catch { /* will retry */ }
+    }
     const freq = noteStringToFrequency(note);
     if (freq <= 0) return;
 
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
 
-    osc.type = 'sine' as OscillatorType;
+    // Use 'triangle' — richer harmonics make the tone more audible on
+    // phone speakers which often cut low sine frequencies
+    osc.type = 'triangle' as OscillatorType;
     osc.frequency.value = freq;
 
     const now = ctx.currentTime;
     const duration = durationMs / 1000;
-    const attack = 0.04;
-    const release = 0.25;
+    const attack = 0.05;
+    const release = 0.3;
 
+    // Louder peak (0.6 through 0.5 master = 0.3 effective) — was 0.35 * 0.5 = 0.175
     gain.gain.setValueAtTime(0, now);
-    gain.gain.linearRampToValueAtTime(0.35, now + attack);
-    gain.gain.setValueAtTime(0.35, now + duration - release);
+    gain.gain.linearRampToValueAtTime(0.6, now + attack);
+    gain.gain.setValueAtTime(0.6, now + duration - release);
     gain.gain.linearRampToValueAtTime(0, now + duration);
 
     osc.connect(gain);
