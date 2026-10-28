@@ -1,5 +1,5 @@
 import { useRef, useEffect, useCallback, useState } from 'react';
-import { Mic, X, Volume2 } from 'lucide-react';
+import { Mic, X, Volume2, Music, ArrowLeft, Headphones } from 'lucide-react';
 import { PitchDetector } from '@/lib/pitchDetector';
 import { audioService } from '@/lib/audioService';
 import { noteStringToFrequency, frequencyToNoteString, centsDifference } from '@/lib/noteUtils';
@@ -47,6 +47,7 @@ interface NoteState {
   hit: boolean;
   missed: boolean;
   processed: boolean;
+  guidePlayed: boolean;
 }
 
 export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
@@ -64,6 +65,8 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
   const hitsRef = useRef(0);
   const phaseRef = useRef<Phase>('idle');
   const lastUiUpdateRef = useRef(0);
+  const guideToneRef = useRef(false);
+  const previewPlayingRef = useRef(false);
 
   const [phase, setPhase] = useState<Phase>('idle');
   const [micError, setMicError] = useState<string | null>(null);
@@ -73,11 +76,17 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
   const [detectedNote, setDetectedNote] = useState<string | null>(null);
   const [inputLevel, setInputLevel] = useState(0);
   const [result, setResult] = useState<HighwayResult | null>(null);
+  const [guideToneOn, setGuideToneOn] = useState(false);
+  const [isListeningPreview, setIsListeningPreview] = useState(false);
 
   // Compute pitch range for the highway
   const allFreqs = riff.notes.map((n) => noteStringToFrequency(n.note));
   const minFreq = Math.min(...allFreqs) * 0.9;
   const maxFreq = Math.max(...allFreqs) * 1.1;
+
+  // Total riff duration for click track
+  const lastRiffNote = riff.notes[riff.notes.length - 1];
+  const riffTotalDuration = lastRiffNote ? lastRiffNote.time + lastRiffNote.duration + 1 : 10;
 
   const freqToX = useCallback(
     (freq: number, canvasW: number) => {
@@ -124,8 +133,43 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
     }
   }, []);
 
+  /**
+   * Play the entire riff melody as a preview so the user can hear
+   * what they need to sing before starting.
+   */
+  const listenToRiff = useCallback(async () => {
+    if (previewPlayingRef.current) return;
+    await audioService.ensureContext();
+    const ctx = audioService.context;
+    if (!ctx) return;
+
+    previewPlayingRef.current = true;
+    setIsListeningPreview(true);
+
+    const startAt = ctx.currentTime + 0.2;
+    audioService.playRiffMelody(riff.notes, startAt);
+    // Also play a click track in sync
+    audioService.playClickTrack(riff.bpm, startAt, riffTotalDuration);
+
+    // Reset state when the preview finishes
+    const totalMs = (riffTotalDuration + 0.5) * 1000;
+    setTimeout(() => {
+      previewPlayingRef.current = false;
+      setIsListeningPreview(false);
+    }, totalMs);
+  }, [riff, riffTotalDuration]);
+
+  const playPreviewTone = useCallback(async () => {
+    await audioService.ensureContext();
+    if (riff.notes.length > 0) {
+      await audioService.playReferenceTone(riff.notes[0].note, 800);
+    }
+  }, [riff]);
+
   const startRiff = useCallback(async () => {
     await audioService.ensureContext();
+    const ctx = audioService.context;
+    if (!ctx) return;
 
     // Initialize note states
     notesRef.current = riff.notes.map((n) => ({
@@ -136,6 +180,7 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
       hit: false,
       missed: false,
       processed: false,
+      guidePlayed: false,
     }));
 
     scoreRef.current = 0;
@@ -149,16 +194,13 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
     phaseRef.current = 'playing';
     startTimeRef.current = performance.now();
 
+    // Schedule click track synchronized with the game start
+    const audioStartAt = ctx.currentTime + 0.1;
+    audioService.playClickTrack(riff.bpm, audioStartAt, riffTotalDuration);
+
     // Start canvas animation loop
     animateHighway();
-  }, [riff]);
-
-  const playPreviewTone = useCallback(async () => {
-    await audioService.ensureContext();
-    if (riff.notes.length > 0) {
-      await audioService.playReferenceTone(riff.notes[0].note, 800);
-    }
-  }, [riff]);
+  }, [riff, riffTotalDuration]);
 
   // Canvas drawing and game loop
   const animateHighway = useCallback(() => {
@@ -223,8 +265,6 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
       // Draw and check notes
       const notes = notesRef.current;
       for (const noteState of notes) {
-        const noteStartY = ((noteState.time - now - LEAD_TIME_SEC + LEAD_TIME_SEC) / LEAD_TIME_SEC) * hitY;
-        // Position: note scrolls from top to hitY based on time
         const progress = (now - (noteState.time - LEAD_TIME_SEC)) / LEAD_TIME_SEC;
         const y = progress * hitY;
         const noteX = freqToX(noteState.freq, W);
@@ -232,6 +272,16 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
 
         // Only draw if within view
         if (y < -noteHeight || y > H + 50) continue;
+
+        // Play guide tone when note enters the hit zone (if enabled)
+        if (
+          guideToneRef.current &&
+          !noteState.guidePlayed &&
+          Math.abs(y - hitY) < hitZoneHeight
+        ) {
+          noteState.guidePlayed = true;
+          audioService.playGuideTone(noteState.note, Math.round(noteState.duration * 1000));
+        }
 
         // Check hit/miss
         if (!noteState.processed) {
@@ -269,7 +319,6 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
               }
             }
           } else if (y > hitY + hitZoneHeight / 2 + 5) {
-            // Past hit zone without hit
             noteState.missed = true;
             noteState.processed = true;
             streakRef.current = 0;
@@ -397,8 +446,8 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
       // Check if riff is complete
       const lastNote = notes[notes.length - 1];
       if (lastNote && now > lastNote.time + lastNote.duration + 2) {
-        // Finish
         phaseRef.current = 'finished';
+        audioService.stopClickTrack();
         const totalNotes = notes.length;
         const accuracy = Math.round((hitsRef.current / totalNotes) * 100);
         const stars = accuracy >= 90 ? 3 : accuracy >= 70 ? 2 : accuracy >= 50 ? 1 : 0;
@@ -423,7 +472,21 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
     rafRef.current = requestAnimationFrame(draw);
   }, [riff, freqToX, onComplete]);
 
-  // Cleanup
+  // Full cleanup function — stops everything
+  const fullCleanup = useCallback(() => {
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    if (detectorRef.current) {
+      detectorRef.current.stop();
+      detectorRef.current = null;
+    }
+    audioService.stopClickTrack();
+    phaseRef.current = 'idle';
+  }, []);
+
+  // Cleanup on unmount
   useEffect(() => {
     const canvas = canvasRef.current;
     if (canvas) {
@@ -438,37 +501,53 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
       window.addEventListener('resize', resize);
       return () => {
         window.removeEventListener('resize', resize);
-        if (rafRef.current) cancelAnimationFrame(rafRef.current);
-        if (detectorRef.current) {
-          detectorRef.current.stop();
-          detectorRef.current = null;
-        }
+        fullCleanup();
       };
     }
-  }, []);
+  }, [fullCleanup]);
 
   const handleExit = useCallback(() => {
-    if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    if (detectorRef.current) {
-      detectorRef.current.stop();
-      detectorRef.current = null;
-    }
+    fullCleanup();
     onExit();
-  }, [onExit]);
+  }, [fullCleanup, onExit]);
+
+  const toggleGuideTone = useCallback(() => {
+    setGuideToneOn((prev) => {
+      const next = !prev;
+      guideToneRef.current = next;
+      return next;
+    });
+  }, []);
 
   const levelPercent = Math.min(100, Math.round(inputLevel * 500));
 
   return (
     <div className="min-h-screen bg-bg flex flex-col">
-      {/* Exit button */}
-      <div className="absolute top-4 left-4 z-20">
+      {/* Top bar with exit and guide tone toggle */}
+      <div className="absolute top-4 left-4 z-20 flex items-center gap-2">
         <button
           onClick={handleExit}
           className="inline-flex items-center gap-1.5 text-sm text-text-muted hover:text-text transition-colors bg-bg-secondary/80 backdrop-blur rounded-lg px-3 py-2 border border-border"
         >
-          <X size={16} /> Exit
+          <ArrowLeft size={16} /> Exit Riff
         </button>
       </div>
+
+      {/* Guide tone toggle — visible during play */}
+      {phase === 'playing' && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20">
+          <button
+            onClick={toggleGuideTone}
+            className={`inline-flex items-center gap-1.5 text-xs font-semibold rounded-lg px-3 py-2 border transition-all ${
+              guideToneOn
+                ? 'bg-accent/20 text-accent border-accent/30'
+                : 'bg-bg-secondary/80 text-text-muted border-border hover:text-text'
+            }`}
+          >
+            <Headphones size={14} /> Guide Tone {guideToneOn ? 'ON' : 'OFF'}
+          </button>
+        </div>
+      )}
 
       {/* Score HUD */}
       {phase !== 'idle' && phase !== 'requesting-mic' && (
@@ -494,18 +573,33 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
       <div className="flex-1 relative">
         <canvas ref={canvasRef} className="absolute inset-0 w-full h-full" />
 
-        {/* Idle / requesting-mic overlay */}
+        {/* Idle overlay */}
         {phase === 'idle' && (
           <div className="absolute inset-0 flex flex-col items-center justify-center z-10 px-6">
-            <div className="text-center max-w-sm">
-              <h2 className="text-2xl font-bold font-display mb-2">{riff.name}</h2>
-              <p className="text-text-secondary text-sm mb-6">{riff.description}</p>
+            <div className="text-center max-w-sm space-y-4">
+              <div>
+                <h2 className="text-2xl font-bold font-display mb-2">{riff.name}</h2>
+                <p className="text-text-secondary text-sm">{riff.description}</p>
+              </div>
+              <Button
+                fullWidth
+                size="lg"
+                variant="secondary"
+                onClick={listenToRiff}
+                leftIcon={<Music size={18} />}
+                loading={isListeningPreview}
+              >
+                {isListeningPreview ? 'Playing Riff...' : 'Listen to Riff'}
+              </Button>
               <Button fullWidth size="lg" onClick={enableMicrophone} leftIcon={<Mic size={18} />}>
                 Enable Microphone
               </Button>
               {micError && (
-                <p className="text-sm text-accent text-center mt-3">{micError}</p>
+                <p className="text-sm text-accent text-center">{micError}</p>
               )}
+              <p className="text-xs text-text-muted text-center">
+                Listen first to hear the melody, then enable your mic to start singing.
+              </p>
             </div>
           </div>
         )}
@@ -526,18 +620,43 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
                   {riff.notes[0]?.note}
                 </p>
               </div>
+
+              {/* Guide tone toggle */}
+              <button
+                onClick={toggleGuideTone}
+                className={`inline-flex items-center gap-1.5 text-xs font-semibold rounded-lg px-3 py-2 border transition-all ${
+                  guideToneOn
+                    ? 'bg-accent/20 text-accent border-accent/30'
+                    : 'bg-bg-secondary text-text-muted border-border hover:text-text'
+                }`}
+              >
+                <Headphones size={14} /> Guide Tone {guideToneOn ? 'ON' : 'OFF'}
+              </button>
+
               <Button fullWidth size="xl" onClick={startRiff} leftIcon={<Mic size={20} />}>
                 Start Riff
               </Button>
-              <Button
-                fullWidth
-                size="lg"
-                variant="secondary"
-                onClick={playPreviewTone}
-                leftIcon={<Volume2 size={18} />}
-              >
-                Preview First Note
-              </Button>
+              <div className="flex gap-3">
+                <Button
+                  fullWidth
+                  size="lg"
+                  variant="secondary"
+                  onClick={listenToRiff}
+                  leftIcon={<Music size={18} />}
+                  loading={isListeningPreview}
+                >
+                  Listen to Riff
+                </Button>
+                <Button
+                  fullWidth
+                  size="lg"
+                  variant="secondary"
+                  onClick={playPreviewTone}
+                  leftIcon={<Volume2 size={18} />}
+                >
+                  First Note
+                </Button>
+              </div>
             </div>
           </div>
         )}
@@ -599,9 +718,17 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
                 </div>
               </div>
 
-              <Button fullWidth size="xl" onClick={handleExit}>
-                Back to Riffs
-              </Button>
+              <div className="flex gap-3">
+                <Button fullWidth size="lg" variant="secondary" onClick={() => {
+                  setPhase('ready');
+                  phaseRef.current = 'ready';
+                }}>
+                  Retry
+                </Button>
+                <Button fullWidth size="lg" onClick={handleExit} leftIcon={<X size={18} />}>
+                  Back to Riffs
+                </Button>
+              </div>
             </div>
           </div>
         )}
