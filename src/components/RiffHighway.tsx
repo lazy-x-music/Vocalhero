@@ -22,7 +22,7 @@ export interface HighwayResult {
   totalNotes: number;
 }
 
-type Phase = 'idle' | 'requesting-mic' | 'ready' | 'playing' | 'finished';
+type Phase = 'select' | 'playing' | 'finished';
 
 const TOLERANCE_CENTS = 80;
 const HIT_ZONE_Y = 0.82;
@@ -63,12 +63,13 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
   const streakRef = useRef(0);
   const maxStreakRef = useRef(0);
   const hitsRef = useRef(0);
-  const phaseRef = useRef<Phase>('idle');
+  const phaseRef = useRef<Phase>('select');
   const lastUiUpdateRef = useRef(0);
   const guideToneRef = useRef(false);
   const previewPlayingRef = useRef(false);
+  const micInitializedRef = useRef(false);
 
-  const [phase, setPhase] = useState<Phase>('idle');
+  const [phase, setPhase] = useState<Phase>('select');
   const [micError, setMicError] = useState<string | null>(null);
   const [score, setScore] = useState(0);
   const [streak, setStreak] = useState(0);
@@ -78,13 +79,12 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
   const [result, setResult] = useState<HighwayResult | null>(null);
   const [guideToneOn, setGuideToneOn] = useState(false);
   const [isListeningPreview, setIsListeningPreview] = useState(false);
+  const [isStarting, setIsStarting] = useState(false);
 
-  // Compute pitch range for the highway
   const allFreqs = riff.notes.map((n) => noteStringToFrequency(n.note));
   const minFreq = Math.min(...allFreqs) * 0.9;
   const maxFreq = Math.max(...allFreqs) * 1.1;
 
-  // Total riff duration for click track
   const lastRiffNote = riff.notes[riff.notes.length - 1];
   const riffTotalDuration = lastRiffNote ? lastRiffNote.time + lastRiffNote.duration + 1 : 10;
 
@@ -100,43 +100,32 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
     [minFreq, maxFreq]
   );
 
-  const enableMicrophone = useCallback(async () => {
-    setPhase('requesting-mic');
-    phaseRef.current = 'requesting-mic';
-    setMicError(null);
-    try {
-      await audioService.ensureContext();
-      const detector = new PitchDetector();
-
-      detector.start((freq: number, level: number) => {
-        currentFreqRef.current = freq;
-        currentLevelRef.current = level;
-      });
-
-      detectorRef.current = detector;
-      setPhase('ready');
-      phaseRef.current = 'ready';
-    } catch (err) {
-      let msg = 'Could not access microphone.';
-      if (err instanceof Error) {
-        if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-          msg = 'Microphone permission denied. Please allow access in your browser settings.';
-        } else if (err.name === 'NotFoundError') {
-          msg = 'No microphone found on this device.';
-        } else {
-          msg = err.message;
-        }
-      }
-      setMicError(msg);
-      setPhase('idle');
-      phaseRef.current = 'idle';
+  /**
+   * Ensure the microphone is already running before the game starts.
+   * Called once — keeps the mic alive across retries.
+   */
+  const ensureMicrophone = useCallback(async () => {
+    if (micInitializedRef.current && detectorRef.current?.isRunning) return;
+    if (micInitializedRef.current && detectorRef.current) {
+      detectorRef.current.stop();
+      detectorRef.current = null;
     }
+
+    await audioService.ensureContext();
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      throw new Error('Microphone API not available in this browser.');
+    }
+
+    const detector = new PitchDetector();
+    await detector.start((freq: number, level: number) => {
+      currentFreqRef.current = freq;
+      currentLevelRef.current = level;
+    });
+    detectorRef.current = detector;
+    micInitializedRef.current = true;
   }, []);
 
-  /**
-   * Play the entire riff melody as a preview so the user can hear
-   * what they need to sing before starting.
-   */
   const listenToRiff = useCallback(async () => {
     if (previewPlayingRef.current) return;
     await audioService.ensureContext();
@@ -148,58 +137,13 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
 
     const startAt = ctx.currentTime + 0.2;
     audioService.playRiffMelody(riff.notes, startAt);
-    // Also play a click track in sync
     audioService.playClickTrack(riff.bpm, startAt, riffTotalDuration);
 
-    // Reset state when the preview finishes
     const totalMs = (riffTotalDuration + 0.5) * 1000;
     setTimeout(() => {
       previewPlayingRef.current = false;
       setIsListeningPreview(false);
     }, totalMs);
-  }, [riff, riffTotalDuration]);
-
-  const playPreviewTone = useCallback(async () => {
-    await audioService.ensureContext();
-    if (riff.notes.length > 0) {
-      await audioService.playReferenceTone(riff.notes[0].note, 800);
-    }
-  }, [riff]);
-
-  const startRiff = useCallback(async () => {
-    await audioService.ensureContext();
-    const ctx = audioService.context;
-    if (!ctx) return;
-
-    // Initialize note states
-    notesRef.current = riff.notes.map((n) => ({
-      note: n.note,
-      freq: noteStringToFrequency(n.note),
-      time: n.time,
-      duration: n.duration,
-      hit: false,
-      missed: false,
-      processed: false,
-      guidePlayed: false,
-    }));
-
-    scoreRef.current = 0;
-    streakRef.current = 0;
-    maxStreakRef.current = 0;
-    hitsRef.current = 0;
-    particlesRef.current = [];
-    setResult(null);
-
-    setPhase('playing');
-    phaseRef.current = 'playing';
-    startTimeRef.current = performance.now();
-
-    // Schedule click track synchronized with the game start
-    const audioStartAt = ctx.currentTime + 0.1;
-    audioService.playClickTrack(riff.bpm, audioStartAt, riffTotalDuration);
-
-    // Start canvas animation loop
-    animateHighway();
   }, [riff, riffTotalDuration]);
 
   // Canvas drawing and game loop
@@ -216,11 +160,9 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
       const H = canvas.height;
       const now = (performance.now() - startTimeRef.current) / 1000;
 
-      // Clear with dark background
       ctx2d.fillStyle = '#0a0a0f';
       ctx2d.fillRect(0, 0, W, H);
 
-      // Draw highway perspective lines
       ctx2d.strokeStyle = 'rgba(255,255,255,0.06)';
       ctx2d.lineWidth = 1;
       for (let i = 0; i <= 6; i++) {
@@ -231,7 +173,6 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
         ctx2d.stroke();
       }
 
-      // Horizontal lane lines
       for (let i = 0; i <= 8; i++) {
         const y = (i / 8) * H;
         ctx2d.strokeStyle = `rgba(255,255,255,${i === Math.round(HIT_ZONE_Y * 8) ? 0.15 : 0.04})`;
@@ -241,7 +182,6 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
         ctx2d.stroke();
       }
 
-      // Draw hit zone
       const hitY = HIT_ZONE_Y * H;
       const hitZoneHeight = 50;
       const gradient = ctx2d.createLinearGradient(0, hitY - hitZoneHeight / 2, 0, hitY + hitZoneHeight / 2);
@@ -251,7 +191,6 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
       ctx2d.fillStyle = gradient;
       ctx2d.fillRect(0, hitY - hitZoneHeight / 2, W, hitZoneHeight);
 
-      // Hit zone line
       ctx2d.strokeStyle = riff.color;
       ctx2d.lineWidth = 2;
       ctx2d.shadowBlur = 12;
@@ -262,7 +201,6 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
       ctx2d.stroke();
       ctx2d.shadowBlur = 0;
 
-      // Draw and check notes
       const notes = notesRef.current;
       for (const noteState of notes) {
         const progress = (now - (noteState.time - LEAD_TIME_SEC)) / LEAD_TIME_SEC;
@@ -270,10 +208,8 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
         const noteX = freqToX(noteState.freq, W);
         const noteHeight = Math.max(20, noteState.duration * NOTE_SPEED_PX_PER_SEC * 0.3);
 
-        // Only draw if within view
         if (y < -noteHeight || y > H + 50) continue;
 
-        // Play guide tone when note enters the hit zone (if enabled)
         if (
           guideToneRef.current &&
           !noteState.guidePlayed &&
@@ -283,7 +219,6 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
           audioService.playGuideTone(noteState.note, Math.round(noteState.duration * 1000));
         }
 
-        // Check hit/miss
         if (!noteState.processed) {
           const distToHitZone = Math.abs(y - hitY);
           const inHitZone = distToHitZone < hitZoneHeight / 2;
@@ -299,10 +234,8 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
                 streakRef.current++;
                 maxStreakRef.current = Math.max(maxStreakRef.current, streakRef.current);
                 const mult = streakRef.current >= 20 ? 4 : streakRef.current >= 10 ? 2 : 1;
-                const points = 100 * mult;
-                scoreRef.current += points;
+                scoreRef.current += 100 * mult;
 
-                // Spawn hit particles
                 for (let p = 0; p < 12; p++) {
                   const angle = (p / 12) * Math.PI * 2;
                   particlesRef.current.push({
@@ -325,7 +258,6 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
           }
         }
 
-        // Draw note
         const alpha = noteState.hit ? 0.3 : noteState.missed ? 0.2 : 1;
         ctx2d.globalAlpha = alpha;
 
@@ -342,13 +274,11 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
           ctx2d.shadowColor = riff.color;
         }
 
-        // Note capsule
         const capsuleW = 36;
         ctx2d.beginPath();
         ctx2d.roundRect(noteX - capsuleW / 2, y - noteHeight / 2, capsuleW, noteHeight, 8);
         ctx2d.fill();
 
-        // Note label
         if (!noteState.hit && !noteState.missed) {
           ctx2d.shadowBlur = 0;
           ctx2d.fillStyle = '#fff';
@@ -362,7 +292,6 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
         ctx2d.globalAlpha = 1;
       }
 
-      // Draw connecting path lines between consecutive notes
       ctx2d.strokeStyle = `${riff.color}33`;
       ctx2d.lineWidth = 3;
       for (let i = 0; i < notes.length - 1; i++) {
@@ -383,7 +312,6 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
         }
       }
 
-      // Draw user pitch avatar
       const userFreq = currentFreqRef.current;
       const level = currentLevelRef.current;
       if (userFreq > 0 && level > 0.01) {
@@ -395,7 +323,6 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
         ctx2d.arc(avatarX, hitY, 10, 0, Math.PI * 2);
         ctx2d.fill();
 
-        // Glow ring
         ctx2d.strokeStyle = 'rgba(255,255,255,0.4)';
         ctx2d.lineWidth = 2;
         ctx2d.beginPath();
@@ -404,7 +331,6 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
         ctx2d.shadowBlur = 0;
       }
 
-      // Draw and update particles
       const dt = 1 / 60;
       const particles = particlesRef.current;
       for (let i = particles.length - 1; i >= 0; i--) {
@@ -428,7 +354,6 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
       ctx2d.globalAlpha = 1;
       ctx2d.shadowBlur = 0;
 
-      // Throttle UI state updates
       const uiNow = performance.now();
       if (uiNow - lastUiUpdateRef.current > UI_UPDATE_MS) {
         lastUiUpdateRef.current = uiNow;
@@ -436,14 +361,9 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
         setStreak(streakRef.current);
         setMultiplier(streakRef.current >= 20 ? 4 : streakRef.current >= 10 ? 2 : 1);
         setInputLevel(level);
-        if (userFreq > 0) {
-          setDetectedNote(frequencyToNoteString(userFreq));
-        } else {
-          setDetectedNote(null);
-        }
+        setDetectedNote(userFreq > 0 ? frequencyToNoteString(userFreq) : null);
       }
 
-      // Check if riff is complete
       const lastNote = notes[notes.length - 1];
       if (lastNote && now > lastNote.time + lastNote.duration + 2) {
         phaseRef.current = 'finished';
@@ -472,7 +392,62 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
     rafRef.current = requestAnimationFrame(draw);
   }, [riff, freqToX, onComplete]);
 
-  // Full cleanup function — stops everything
+  const startRiff = useCallback(async () => {
+    setIsStarting(true);
+    setMicError(null);
+    try {
+      await ensureMicrophone();
+    } catch (err) {
+      let msg = 'Could not access microphone.';
+      if (err instanceof Error) {
+        if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+          msg = 'Microphone permission denied. Please allow access in your browser settings.';
+        } else if (err.name === 'NotFoundError') {
+          msg = 'No microphone found on this device.';
+        } else {
+          msg = err.message;
+        }
+      }
+      setMicError(msg);
+      setIsStarting(false);
+      return;
+    }
+
+    const ctx = audioService.context;
+    if (!ctx) {
+      setIsStarting(false);
+      return;
+    }
+
+    notesRef.current = riff.notes.map((n) => ({
+      note: n.note,
+      freq: noteStringToFrequency(n.note),
+      time: n.time,
+      duration: n.duration,
+      hit: false,
+      missed: false,
+      processed: false,
+      guidePlayed: false,
+    }));
+
+    scoreRef.current = 0;
+    streakRef.current = 0;
+    maxStreakRef.current = 0;
+    hitsRef.current = 0;
+    particlesRef.current = [];
+    setResult(null);
+
+    setPhase('playing');
+    phaseRef.current = 'playing';
+    startTimeRef.current = performance.now();
+    setIsStarting(false);
+
+    const audioStartAt = ctx.currentTime + 0.1;
+    audioService.playClickTrack(riff.bpm, audioStartAt, riffTotalDuration);
+
+    animateHighway();
+  }, [riff, riffTotalDuration, ensureMicrophone, animateHighway]);
+
   const fullCleanup = useCallback(() => {
     if (rafRef.current) {
       cancelAnimationFrame(rafRef.current);
@@ -483,10 +458,10 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
       detectorRef.current = null;
     }
     audioService.stopClickTrack();
-    phaseRef.current = 'idle';
+    micInitializedRef.current = false;
+    phaseRef.current = 'select';
   }, []);
 
-  // Cleanup on unmount
   useEffect(() => {
     const canvas = canvasRef.current;
     if (canvas) {
@@ -523,8 +498,8 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
 
   return (
     <div className="min-h-screen bg-bg flex flex-col">
-      {/* Top bar with exit and guide tone toggle */}
-      <div className="absolute top-4 left-4 z-20 flex items-center gap-2">
+      {/* Exit button */}
+      <div className="absolute top-4 left-4 z-20">
         <button
           onClick={handleExit}
           className="inline-flex items-center gap-1.5 text-sm text-text-muted hover:text-text transition-colors bg-bg-secondary/80 backdrop-blur rounded-lg px-3 py-2 border border-border"
@@ -533,7 +508,7 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
         </button>
       </div>
 
-      {/* Guide tone toggle — visible during play */}
+      {/* Guide tone toggle during play */}
       {phase === 'playing' && (
         <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20">
           <button
@@ -544,13 +519,13 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
                 : 'bg-bg-secondary/80 text-text-muted border-border hover:text-text'
             }`}
           >
-            <Headphones size={14} /> Guide Tone {guideToneOn ? 'ON' : 'OFF'}
+            <Headphones size={14} /> Guide {guideToneOn ? 'ON' : 'OFF'}
           </button>
         </div>
       )}
 
       {/* Score HUD */}
-      {phase !== 'idle' && phase !== 'requesting-mic' && (
+      {phase === 'playing' && (
         <div className="absolute top-4 right-4 z-20 flex items-center gap-4 bg-bg-secondary/80 backdrop-blur rounded-xl px-4 py-2.5 border border-border">
           <div className="text-right">
             <p className="text-[10px] uppercase tracking-widest text-text-muted">Score</p>
@@ -573,52 +548,13 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
       <div className="flex-1 relative">
         <canvas ref={canvasRef} className="absolute inset-0 w-full h-full" />
 
-        {/* Idle overlay */}
-        {phase === 'idle' && (
+        {/* Select screen — listen + start */}
+        {phase === 'select' && (
           <div className="absolute inset-0 flex flex-col items-center justify-center z-10 px-6">
-            <div className="text-center max-w-sm space-y-4">
+            <div className="text-center max-w-sm space-y-5">
               <div>
                 <h2 className="text-2xl font-bold font-display mb-2">{riff.name}</h2>
                 <p className="text-text-secondary text-sm">{riff.description}</p>
-              </div>
-              <Button
-                fullWidth
-                size="lg"
-                variant="secondary"
-                onClick={listenToRiff}
-                leftIcon={<Music size={18} />}
-                loading={isListeningPreview}
-              >
-                {isListeningPreview ? 'Playing Riff...' : 'Listen to Riff'}
-              </Button>
-              <Button fullWidth size="lg" onClick={enableMicrophone} leftIcon={<Mic size={18} />}>
-                Enable Microphone
-              </Button>
-              {micError && (
-                <p className="text-sm text-accent text-center">{micError}</p>
-              )}
-              <p className="text-xs text-text-muted text-center">
-                Listen first to hear the melody, then enable your mic to start singing.
-              </p>
-            </div>
-          </div>
-        )}
-
-        {phase === 'requesting-mic' && (
-          <div className="absolute inset-0 flex items-center justify-center z-10">
-            <p className="text-text-secondary">Requesting microphone access...</p>
-          </div>
-        )}
-
-        {/* Ready overlay */}
-        {phase === 'ready' && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center z-10 px-6">
-            <div className="text-center max-w-sm space-y-4">
-              <div>
-                <p className="text-xs uppercase tracking-widest text-text-muted mb-1">First Note</p>
-                <p className="text-5xl font-extrabold font-display" style={{ color: riff.color }}>
-                  {riff.notes[0]?.note}
-                </p>
               </div>
 
               {/* Guide tone toggle */}
@@ -633,30 +569,36 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
                 <Headphones size={14} /> Guide Tone {guideToneOn ? 'ON' : 'OFF'}
               </button>
 
-              <Button fullWidth size="xl" onClick={startRiff} leftIcon={<Mic size={20} />}>
-                Start Riff
+              {/* Listen to Riff */}
+              <Button
+                fullWidth
+                size="lg"
+                variant="secondary"
+                onClick={listenToRiff}
+                leftIcon={<Music size={18} />}
+                loading={isListeningPreview}
+              >
+                {isListeningPreview ? 'Playing...' : 'Listen to Riff'}
               </Button>
-              <div className="flex gap-3">
-                <Button
-                  fullWidth
-                  size="lg"
-                  variant="secondary"
-                  onClick={listenToRiff}
-                  leftIcon={<Music size={18} />}
-                  loading={isListeningPreview}
-                >
-                  Listen to Riff
-                </Button>
-                <Button
-                  fullWidth
-                  size="lg"
-                  variant="secondary"
-                  onClick={playPreviewTone}
-                  leftIcon={<Volume2 size={18} />}
-                >
-                  First Note
-                </Button>
-              </div>
+
+              {/* Start — requests mic + begins game in one action */}
+              <Button
+                fullWidth
+                size="xl"
+                onClick={startRiff}
+                leftIcon={<Mic size={20} />}
+                loading={isStarting}
+              >
+                {isStarting ? 'Starting...' : 'Start Singing'}
+              </Button>
+
+              {micError && (
+                <p className="text-sm text-accent text-center">{micError}</p>
+              )}
+
+              <p className="text-xs text-text-muted text-center">
+                Press Start, allow microphone, then sing each note as it hits the strike zone.
+              </p>
             </div>
           </div>
         )}
@@ -681,7 +623,6 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
               <h2 className="text-3xl font-bold font-display mb-1">RIFF COMPLETE</h2>
               <p className="text-text-muted text-sm mb-6">{riff.name}</p>
 
-              {/* Stars */}
               <div className="flex items-center justify-center gap-2 mb-6">
                 {[0, 1, 2].map((i) => (
                   <div
@@ -719,10 +660,15 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
               </div>
 
               <div className="flex gap-3">
-                <Button fullWidth size="lg" variant="secondary" onClick={() => {
-                  setPhase('ready');
-                  phaseRef.current = 'ready';
-                }}>
+                <Button
+                  fullWidth
+                  size="lg"
+                  variant="secondary"
+                  onClick={() => {
+                    setPhase('select');
+                    phaseRef.current = 'select';
+                  }}
+                >
                   Retry
                 </Button>
                 <Button fullWidth size="lg" onClick={handleExit} leftIcon={<X size={18} />}>

@@ -130,9 +130,62 @@ class AudioService {
   }
 
   /**
+   * Play a single rich synth note at an absolute time.
+   * Uses dual oscillators (fundamental + octave) through a lowpass
+   * filter for a warm, flute-like tone that sounds good on phone speakers.
+   */
+  private playSynthNote(freq: number, start: number, dur: number, peakGain: number): void {
+    const ctx = this.ctx!;
+    const master = this.masterGain!;
+
+    // Lowpass filter for warmth
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(freq * 4, start);
+    filter.frequency.exponentialRampToValueAtTime(freq * 2, start + dur);
+    filter.Q.value = 1;
+
+    // Fundamental oscillator
+    const osc1 = ctx.createOscillator();
+    osc1.type = 'triangle' as OscillatorType;
+    osc1.frequency.value = freq;
+
+    // Octave-up for brightness (lower gain)
+    const osc2 = ctx.createOscillator();
+    osc2.type = 'sine' as OscillatorType;
+    osc2.frequency.value = freq * 2;
+
+    const gain1 = ctx.createGain();
+    const gain2 = ctx.createGain();
+
+    const attack = Math.min(0.04, dur * 0.15);
+    const release = Math.min(0.12, dur * 0.3);
+
+    gain1.gain.setValueAtTime(0, start);
+    gain1.gain.linearRampToValueAtTime(peakGain, start + attack);
+    gain1.gain.setValueAtTime(peakGain, start + dur - release);
+    gain1.gain.linearRampToValueAtTime(0, start + dur);
+
+    gain2.gain.setValueAtTime(0, start);
+    gain2.gain.linearRampToValueAtTime(peakGain * 0.3, start + attack);
+    gain2.gain.setValueAtTime(peakGain * 0.3, start + dur - release);
+    gain2.gain.linearRampToValueAtTime(0, start + dur);
+
+    osc1.connect(gain1);
+    osc2.connect(gain2);
+    gain1.connect(filter);
+    gain2.connect(filter);
+    filter.connect(master);
+
+    osc1.start(start);
+    osc2.start(start);
+    osc1.stop(start + dur + 0.05);
+    osc2.stop(start + dur + 0.05);
+  }
+
+  /**
    * Play an entire riff melody as a preview — all notes sequenced with
-   * their timings relative to startTime. Returns the AudioContext startTime
-   * so the caller can schedule a click track in sync.
+   * their timings relative to startAtSec.
    */
   playRiffMelody(
     notes: { note: string; time: number; duration: number }[],
@@ -144,26 +197,7 @@ class AudioService {
     for (const n of notes) {
       const freq = noteStringToFrequency(n.note);
       if (freq <= 0) continue;
-
-      const start = startAtSec + n.time;
-      const dur = n.duration;
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-
-      osc.type = 'triangle' as OscillatorType;
-      osc.frequency.value = freq;
-
-      const attack = 0.03;
-      const release = 0.15;
-      gain.gain.setValueAtTime(0, start);
-      gain.gain.linearRampToValueAtTime(0.4, start + attack);
-      gain.gain.setValueAtTime(0.4, start + dur - release);
-      gain.gain.linearRampToValueAtTime(0, start + dur);
-
-      osc.connect(gain);
-      gain.connect(this.masterGain);
-      osc.start(start);
-      osc.stop(start + dur + 0.05);
+      this.playSynthNote(freq, startAtSec + n.time, n.duration, 0.5);
     }
   }
 
@@ -177,22 +211,7 @@ class AudioService {
     const freq = noteStringToFrequency(note);
     if (freq <= 0) return;
 
-    const now = ctx.currentTime;
-    const dur = durationMs / 1000;
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-
-    osc.type = 'sine' as OscillatorType;
-    osc.frequency.value = freq;
-
-    gain.gain.setValueAtTime(0, now);
-    gain.gain.linearRampToValueAtTime(0.15, now + 0.02);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + dur);
-
-    osc.connect(gain);
-    gain.connect(this.masterGain);
-    osc.start(now);
-    osc.stop(now + dur + 0.05);
+    this.playSynthNote(freq, ctx.currentTime, durationMs / 1000, 0.2);
   }
 
   /**
@@ -217,12 +236,12 @@ class AudioService {
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
 
-      osc.type = 'square' as OscillatorType;
-      osc.frequency.value = i % 4 === 0 ? 1500 : 900;
+      osc.type = 'sine' as OscillatorType;
+      osc.frequency.value = i % 4 === 0 ? 1200 : 800;
 
       gain.gain.setValueAtTime(0, beatTime);
-      gain.gain.linearRampToValueAtTime(i % 4 === 0 ? 0.08 : 0.04, beatTime + 0.001);
-      gain.gain.exponentialRampToValueAtTime(0.001, beatTime + 0.03);
+      gain.gain.linearRampToValueAtTime(i % 4 === 0 ? 0.12 : 0.06, beatTime + 0.002);
+      gain.gain.exponentialRampToValueAtTime(0.001, beatTime + 0.04);
 
       osc.connect(gain);
       gain.connect(this.masterGain);
