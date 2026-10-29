@@ -8,10 +8,12 @@ import { SignupPage } from '@/pages/auth/SignupPage';
 import { OnboardingPage } from '@/pages/OnboardingPage';
 import { DashboardPage } from '@/pages/DashboardPage';
 import { ProfilePage } from '@/pages/ProfilePage';
-import { PlaceholderPage } from '@/pages/PlaceholderPage';
 import { WorkoutPage } from '@/pages/WorkoutPage';
-import { Dumbbell, TrendingUp, Trophy, Music } from 'lucide-react';
+import { Music } from 'lucide-react';
 import { RiffHighwayPage } from '@/pages/RiffHighwayPage';
+import { TrainPage } from '@/pages/TrainPage';
+import { ProgressPage } from '@/pages/ProgressPage';
+import { AchievementsPage } from '@/pages/AchievementsPage';
 
 function RequireAuth({ children }: { children: ReactNode }) {
   const { user, loading } = useAuth();
@@ -146,11 +148,7 @@ function AppRoutes() {
           element={
             <RequireAuth>
               <RequireOnboarding>
-                <PlaceholderPage
-                  icon={<Dumbbell size={36} />}
-                  title="Train"
-                  description="Structured vocal workouts, warm-ups, and guided exercises are on the way."
-                />
+                <TrainPage />
               </RequireOnboarding>
             </RequireAuth>
           }
@@ -160,11 +158,7 @@ function AppRoutes() {
           element={
             <RequireAuth>
               <RequireOnboarding>
-                <PlaceholderPage
-                  icon={<TrendingUp size={36} />}
-                  title="Progress"
-                  description="Detailed analytics, range tracking, and before/after comparisons coming soon."
-                />
+                <ProgressPage />
               </RequireOnboarding>
             </RequireAuth>
           }
@@ -174,11 +168,7 @@ function AppRoutes() {
           element={
             <RequireAuth>
               <RequireOnboarding>
-                <PlaceholderPage
-                  icon={<Trophy size={36} />}
-                  title="Achievements"
-                  description="Badges, milestones, and your achievement collection are being built."
-                />
+                <AchievementsPage />
               </RequireOnboarding>
             </RequireAuth>
           }

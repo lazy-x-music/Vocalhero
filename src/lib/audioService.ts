@@ -130,57 +130,82 @@ class AudioService {
   }
 
   /**
-   * Play a single rich synth note at an absolute time.
-   * Uses dual oscillators (fundamental + octave) through a lowpass
-   * filter for a warm, flute-like tone that sounds good on phone speakers.
+   * Play a single vocal-style note using formant synthesis.
+   * A sawtooth oscillator (rich harmonics) is shaped by three
+   * bandpass filters tuned to vowel formant frequencies, producing
+   * an "AH"-like vocal tone that's easy to imitate.
    */
   private playSynthNote(freq: number, start: number, dur: number, peakGain: number): void {
     const ctx = this.ctx!;
     const master = this.masterGain!;
 
-    // Lowpass filter for warmth
-    const filter = ctx.createBiquadFilter();
-    filter.type = 'lowpass';
-    filter.frequency.setValueAtTime(freq * 4, start);
-    filter.frequency.exponentialRampToValueAtTime(freq * 2, start + dur);
-    filter.Q.value = 1;
+    // "AH" vowel formants (Hz) — F1, F2, F3
+    const formants = [800, 1150, 2900];
+    const formantQs = [8, 10, 12];
+    const formantGains = [1.0, 0.5, 0.25];
 
-    // Fundamental oscillator
-    const osc1 = ctx.createOscillator();
-    osc1.type = 'triangle' as OscillatorType;
-    osc1.frequency.value = freq;
+    // Sawtooth has rich harmonics for the formants to sculpt
+    const osc = ctx.createOscillator();
+    osc.type = 'sawtooth' as OscillatorType;
+    osc.frequency.value = freq;
 
-    // Octave-up for brightness (lower gain)
-    const osc2 = ctx.createOscillator();
-    osc2.type = 'sine' as OscillatorType;
-    osc2.frequency.value = freq * 2;
+    // Sub oscillator for body
+    const sub = ctx.createOscillator();
+    sub.type = 'sine' as OscillatorType;
+    sub.frequency.value = freq * 0.5;
 
-    const gain1 = ctx.createGain();
-    const gain2 = ctx.createGain();
+    const oscGain = ctx.createGain();
+    const subGain = ctx.createGain();
 
-    const attack = Math.min(0.04, dur * 0.15);
-    const release = Math.min(0.12, dur * 0.3);
+    const attack = Math.min(0.05, dur * 0.2);
+    const release = Math.min(0.15, dur * 0.35);
 
-    gain1.gain.setValueAtTime(0, start);
-    gain1.gain.linearRampToValueAtTime(peakGain, start + attack);
-    gain1.gain.setValueAtTime(peakGain, start + dur - release);
-    gain1.gain.linearRampToValueAtTime(0, start + dur);
+    oscGain.gain.setValueAtTime(0, start);
+    oscGain.gain.linearRampToValueAtTime(peakGain, start + attack);
+    oscGain.gain.setValueAtTime(peakGain, start + dur - release);
+    oscGain.gain.linearRampToValueAtTime(0, start + dur);
 
-    gain2.gain.setValueAtTime(0, start);
-    gain2.gain.linearRampToValueAtTime(peakGain * 0.3, start + attack);
-    gain2.gain.setValueAtTime(peakGain * 0.3, start + dur - release);
-    gain2.gain.linearRampToValueAtTime(0, start + dur);
+    subGain.gain.setValueAtTime(0, start);
+    subGain.gain.linearRampToValueAtTime(peakGain * 0.15, start + attack);
+    subGain.gain.setValueAtTime(peakGain * 0.15, start + dur - release);
+    subGain.gain.linearRampToValueAtTime(0, start + dur);
 
-    osc1.connect(gain1);
-    osc2.connect(gain2);
-    gain1.connect(filter);
-    gain2.connect(filter);
-    filter.connect(master);
+    // Create formant bandpass filters in parallel
+    const formantNodes = formants.map((fFreq, i) => {
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass' as BiquadFilterType;
+      bp.frequency.value = fFreq;
+      bp.Q.value = formantQs[i];
+      const fGain = ctx.createGain();
+      fGain.gain.value = formantGains[i];
+      bp.connect(fGain);
+      fGain.connect(master);
+      return bp;
+    });
 
-    osc1.start(start);
-    osc2.start(start);
-    osc1.stop(start + dur + 0.05);
-    osc2.stop(start + dur + 0.05);
+    // Slight vibrato for naturalness
+    const lfo = ctx.createOscillator();
+    lfo.type = 'sine' as OscillatorType;
+    lfo.frequency.value = 5.5;
+    const lfoGain = ctx.createGain();
+    lfoGain.gain.value = freq * 0.008;
+    lfo.connect(lfoGain);
+    lfoGain.connect(osc.frequency);
+
+    osc.connect(oscGain);
+    sub.connect(subGain);
+    oscGain.connect(master);
+    subGain.connect(master);
+    for (const fn of formantNodes) {
+      oscGain.connect(fn);
+    }
+
+    osc.start(start);
+    sub.start(start);
+    lfo.start(start);
+    osc.stop(start + dur + 0.05);
+    sub.stop(start + dur + 0.05);
+    lfo.stop(start + dur + 0.05);
   }
 
   /**
