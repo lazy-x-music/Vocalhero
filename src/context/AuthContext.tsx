@@ -8,6 +8,7 @@ import {
 } from '@/lib/authService';
 import { getUserProfile, updateUserProfile } from '@/lib/userService';
 import { localAuth, usingLocalAuth } from '@/lib/localAuth';
+import { ensureMicrophoneStream } from '@/lib/microphone';
 import type { UserProfile } from '@/types';
 
 interface AuthContextValue {
@@ -46,6 +47,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     },
     [user, refreshProfile]
   );
+
+  useEffect(() => {
+    ensureMicrophoneStream().catch(() => {
+      /* permission denied or no mic — exercises show a message when they need it */
+    });
+  }, []);
 
   useEffect(() => {
     let cancelled = false;

@@ -65,7 +65,7 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
   const hitsRef = useRef(0);
   const phaseRef = useRef<Phase>('select');
   const lastUiUpdateRef = useRef(0);
-  const guideToneRef = useRef(false);
+  const guideToneRef = useRef(true);
   const previewPlayingRef = useRef(false);
   const micInitializedRef = useRef(false);
 
@@ -77,7 +77,7 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
   const [detectedNote, setDetectedNote] = useState<string | null>(null);
   const [inputLevel, setInputLevel] = useState(0);
   const [result, setResult] = useState<HighwayResult | null>(null);
-  const [guideToneOn, setGuideToneOn] = useState(false);
+  const [guideToneOn, setGuideToneOn] = useState(true);
   const [isListeningPreview, setIsListeningPreview] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
 
@@ -497,7 +497,7 @@ export function RiffHighway({ riff, onExit, onComplete }: RiffHighwayProps) {
   const levelPercent = Math.min(100, Math.round(inputLevel * 500));
 
   return (
-    <div className="min-h-screen bg-bg flex flex-col">
+    <div className="fixed inset-0 z-50 bg-bg flex flex-col">
       {/* Exit button */}
       <div className="absolute top-4 left-4 z-20">
         <button

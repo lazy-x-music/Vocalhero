@@ -1,4 +1,5 @@
 import { audioService } from './audioService';
+import { ensureMicrophoneStream } from './microphone';
 
 export type PitchDetectionCallback = (frequency: number, level: number, confidence: number) => void;
 
@@ -25,22 +26,7 @@ export class PitchDetector {
 
     this.audioCtx = await audioService.ensureContext();
 
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      throw new Error('Microphone API not available in this browser.');
-    }
-
-    try {
-      this.mediaStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false,
-        },
-        video: false,
-      });
-    } catch {
-      this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-    }
+    this.mediaStream = await ensureMicrophoneStream();
 
     if (this.audioCtx.state === 'suspended') {
       try {
@@ -206,10 +192,7 @@ export class PitchDetector {
       try { this.source.disconnect(); } catch { /* already disconnected */ }
       this.source = null;
     }
-    if (this.mediaStream) {
-      this.mediaStream.getTracks().forEach((t) => t.stop());
-      this.mediaStream = null;
-    }
+    this.mediaStream = null;
     if (this.analyser) {
       try { this.analyser.disconnect(); } catch { /* already disconnected */ }
       this.analyser = null;

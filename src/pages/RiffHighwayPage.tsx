@@ -4,6 +4,7 @@ import { ArrowLeft, Play, Music, Zap, Star } from 'lucide-react';
 import { RIFFS, type Riff } from '@/config/riffs';
 import { RiffHighway, type HighwayResult } from '@/components/RiffHighway';
 import { useAuth } from '@/context/AuthContext';
+import { AppShell } from '@/components/layout/AppShell';
 import { addXp } from '@/lib/userService';
 
 export function RiffHighwayPage() {
@@ -42,10 +43,11 @@ export function RiffHighwayPage() {
 
   // Level selector view
   return (
-    <div className="min-h-screen bg-bg flex flex-col">
+    <AppShell>
+      <div className="relative max-w-2xl mx-auto w-full">
       <div className="absolute top-0 left-1/2 -translate-x-1/2 h-[400px] w-[600px] bg-accent/8 blur-[120px] rounded-full pointer-events-none" />
 
-      <div className="relative z-10 flex-1 flex flex-col max-w-2xl mx-auto w-full px-6 py-8">
+      <div className="relative z-10 flex flex-col">
         {/* Header */}
         <button
           onClick={() => navigate('/dashboard')}
@@ -148,6 +150,7 @@ export function RiffHighwayPage() {
           </p>
         </div>
       </div>
-    </div>
+      </div>
+    </AppShell>
   );
 }
